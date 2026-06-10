@@ -35,36 +35,101 @@ const norm = a => { const l = len(a); return l > 1e-12 ? V(a.x / l, a.y / l) : V
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp  = (a, b, t) => a + (b - a) * t;
 const rand  = (a, b) => a + Math.random() * (b - a);
+const RAD   = Math.PI / 180;
 
 /* ---------------- celestial bodies ---------------- */
-function makePlanet(name, color, orbitR, ang0deg, drawR, realR) {
+// Keplerian ellipse around the Sun (focus at the origin).
+// a: semi-major axis, ecc: eccentricity, varpi: longitude of perihelion,
+// M0: mean anomaly at t=0, mu: the body's own GM (for ships orbiting it).
+function makePlanet(name, color, a, ecc, varpi, M0, drawR, realR, mu) {
   const p = {
-    name, color, orbitR, drawR, realR,
-    ang0: ang0deg * Math.PI / 180,
-    om: Math.sqrt(GM_SUN / (orbitR ** 3)),
-    pos: V(), vel: V(),
+    name, color, a, ecc, varpi, M0, drawR, realR, mu,
+    n: Math.sqrt(GM_SUN / (a ** 3)),
+    b: a * Math.sqrt(1 - ecc * ecc),
+    colR: realR * 1.04,
+    pos: V(), vel: V(), moons: [],
     update(t) {
-      const a = this.ang0 + this.om * t;
-      this.pos = V(this.orbitR * Math.cos(a), this.orbitR * Math.sin(a));
-      this.vel = V(-this.orbitR * this.om * Math.sin(a), this.orbitR * this.om * Math.cos(a));
+      const M = this.M0 + this.n * t;
+      let E = M;                                     // Kepler: M = E - e sin E
+      for (let i = 0; i < 6; i++)
+        E -= (E - this.ecc * Math.sin(E) - M) / (1 - this.ecc * Math.cos(E));
+      const cE = Math.cos(E), sE = Math.sin(E);
+      const xp = this.a * (cE - this.ecc), yp = this.b * sE;
+      const Ed = this.n / (1 - this.ecc * cE);
+      const vxp = -this.a * sE * Ed, vyp = this.b * cE * Ed;
+      const cw = Math.cos(this.varpi), sw = Math.sin(this.varpi);
+      this.pos = V(xp * cw - yp * sw, xp * sw + yp * cw);
+      this.vel = V(vxp * cw - vyp * sw, vxp * sw + vyp * cw);
+      for (const m of this.moons) m.update(t);
     }
   };
   p.update(0);
   return p;
 }
-const earth = makePlanet('Earth', '#3d7dff', AU,         165, 6, 6.371e6);
-const mars  = makePlanet('Mars',  '#ff5a36', 1.524 * AU, 123, 5, 3.39e6);
+
+// circular orbit around a parent planet
+function makeMoon(name, color, parent, a, mu, drawR, realR, colR, ang0) {
+  const m = {
+    name, color, parent, a, mu, drawR, realR, colR, ang0,
+    om: Math.sqrt(parent.mu / (a ** 3)),
+    pos: V(), vel: V(),
+    update(t) {
+      const th = this.ang0 + this.om * t;
+      this.pos = V(parent.pos.x + this.a * Math.cos(th), parent.pos.y + this.a * Math.sin(th));
+      this.vel = V(parent.vel.x - this.a * this.om * Math.sin(th),
+                   parent.vel.y + this.a * this.om * Math.cos(th));
+    }
+  };
+  parent.moons.push(m);
+  m.update(0);
+  return m;
+}
+
+const earth = makePlanet('Earth', '#3d7dff', AU,            0.0167, 103 * RAD, 1.0526, 6, 6.371e6, 3.986004418e14);
+const mars  = makePlanet('Mars',  '#ff5a36', 1.523679 * AU, 0.0934, 336 * RAD, 2.4639, 5, 3.39e6,  4.2828e13);
+const luna   = makeMoon('Luna',   '#9aa3b8', earth, 3.844e8,  4.9048e12, 2.5, 1.7374e6, 1.85e6, 0.9);
+const phobos = makeMoon('Phobos', '#8a7d72', mars,  9.376e6,  0,         1.5, 1.1e4,    2.5e4,  2.1);
+const deimos = makeMoon('Deimos', '#8a7d72', mars,  2.3463e7, 0,         1.5, 6.2e3,    2e4,    4.4);
+
+// bodies that pull on ships & torpedoes / that torpedoes can crash into
+const GRAV_BODIES = [earth, mars, luna];
+const COLLIDERS = [earth, mars, luna, phobos, deimos];
+
+function gravAt(p) {
+  let r2 = p.x * p.x + p.y * p.y, r = Math.sqrt(r2);
+  let s = -GM_SUN / (r2 * r);
+  let ax = p.x * s, ay = p.y * s;
+  for (const b of GRAV_BODIES) {
+    const dx = b.pos.x - p.x, dy = b.pos.y - p.y;
+    r2 = dx * dx + dy * dy; r = Math.sqrt(r2);
+    if (r < b.realR) continue;
+    s = b.mu / (r2 * r);
+    ax += dx * s; ay += dy * s;
+  }
+  return V(ax, ay);
+}
+
+// is the segment p1→p2 clear of every body? (planets & moons block fire)
+function losClear(p1, p2) {
+  const ab = sub(p2, p1);
+  const den = Math.max(dot(ab, ab), 1e-9);
+  for (const c of COLLIDERS) {
+    const tt = clamp(dot(sub(c.pos, p1), ab) / den, 0, 1);
+    if (dist(add(p1, mul(ab, tt)), c.pos) < c.colR * 1.05) return false;
+  }
+  return true;
+}
 
 const SIDES = {
   earth: {
     key: 'earth', navy: 'PFE', fullName: "People's Fleet of Earth",
-    color: '#52a7ff', planet: earth, cls: 'e',
+    color: '#52a7ff', planet: earth, moons: [luna], cls: 'e',
     names: ['Meridian', 'Concord', 'Stalwart', 'Aegis', 'Endeavour', 'Lodestar',
             'Sentinel', 'Bastion', 'Resolute', 'Vanguard', 'Tempest', 'Horizon']
   },
   mars: {
     key: 'mars', navy: 'UMSF', fullName: 'United Mars Space Force',
-    color: '#ff6a45', planet: mars, cls: 'm',
+    color: '#ff6a45', planet: mars, moons: [deimos, phobos], cls: 'm',
     names: ['Olympus', 'Tharsis', 'Valles', 'Ares', 'Acidalia', 'Hellas',
             'Elysium', 'Arcadia', 'Solis', 'Argyre', 'Utopia', 'Syrtis']
   }
@@ -94,6 +159,8 @@ function log(msg, cls = 'n') {
 }
 
 /* ---------------- fleets ---------------- */
+const R_DEF = 1.9e7;            // home-fleet circular orbit radius
+
 function makeGroup(sideKey, role, names, target) {
   const side = SIDES[sideKey];
   return {
@@ -102,47 +169,106 @@ function makeGroup(sideKey, role, names, target) {
     ships: names.map((name, fi) => ({ name, fi, alive: true, ammo: TORP_AMMO })),
     count0: names.length,
     pos: V(), vel: V(), fdir: V(1, 0), aim: V(1, 0),
-    phase: role === 'defense' ? 'orbit' : 'accel',
-    thrusting: false, flipped: false, trail: [], parkOffset: null
+    phase: role === 'strike' ? 'accel' : 'orbit',
+    thrusting: false, flipped: false, trail: []
   };
+}
+
+// how a side's picket ships are spread over its moons
+function picketPlan(key, nPicket) {
+  const moons = SIDES[key].moons;
+  if (moons.length === 1) return [{ moon: moons[0], n: nPicket }];
+  const first = Math.ceil(nPicket / 2);          // outer moon gets the larger half
+  return [{ moon: moons[0], n: first }, { moon: moons[1], n: nPicket - first }];
 }
 
 function buildFleets(allocEarth, allocMars) {
   GR = {};
   for (const [key, n] of [['earth', allocEarth], ['mars', allocMars]]) {
     const side = SIDES[key], tgt = SIDES[enemyOf(key)].planet;
+    const nDef = N_SHIPS - n;
+    const nPicket = Math.floor(nDef / 3);   // a third of the defenders picket the moons
     const strike = makeGroup(key, 'strike', side.names.slice(0, n), tgt);
-    const home   = makeGroup(key, 'defense', side.names.slice(n), side.planet);
+    const home   = makeGroup(key, 'defense', side.names.slice(n, n + nDef - nPicket), side.planet);
     const dir = norm(sub(tgt.pos, side.planet.pos));
     strike.pos = add(side.planet.pos, mul(dir, 2.5e7));
     strike.vel = { ...side.planet.vel };
     strike.fdir = dir; strike.aim = dir;
     home.pos = { ...side.planet.pos };
     home.vel = { ...side.planet.vel };
-    GR[key] = { strike, home };
+    home.ringOm = Math.sqrt(side.planet.mu / R_DEF ** 3);
+    const pickets = [];
+    let taken = N_SHIPS - nPicket;
+    for (const { moon, n: np } of picketPlan(key, nPicket)) {
+      if (!np) continue;
+      const picket = makeGroup(key, 'picket', side.names.slice(taken, taken + np), side.planet);
+      taken += np;
+      picket.moon = moon;
+      picket.mode = 'station';
+      // real orbit around a massive moon; powered loiter near a tiny one
+      picket.ringR = moon.mu > 1e9 ? 3.5e6 : 8e5;
+      picket.ringOm = moon.mu > 1e9 ? Math.sqrt(moon.mu / picket.ringR ** 3) : 1.5e-4;
+      picket.pos = { ...moon.pos };
+      picket.vel = { ...moon.vel };
+      pickets.push(picket);
+    }
+    GR[key] = { strike, home, pickets };
   }
-  allGroups = [GR.earth.strike, GR.earth.home, GR.mars.strike, GR.mars.home];
+  allGroups = [GR.earth.strike, GR.earth.home, ...GR.earth.pickets,
+               GR.mars.strike, GR.mars.home, ...GR.mars.pickets];
   attackGroups = [GR.earth.strike, GR.mars.strike].filter(g => g.count0 > 0);
-  // engagements only happen at the planets: each strike force against
-  // the defending home fleet of its destination
+  // engagements happen at the planets: each strike force against the
+  // defending home fleet and moon pickets of its destination
   pairCandidates = [];
-  if (GR.earth.strike.count0 && GR.mars.home.count0) pairCandidates.push([GR.earth.strike, GR.mars.home]);
-  if (GR.mars.strike.count0 && GR.earth.home.count0) pairCandidates.push([GR.mars.strike, GR.earth.home]);
+  for (const key of ['earth', 'mars']) {
+    const st = GR[key].strike, foe = GR[enemyOf(key)];
+    if (!st.count0) continue;
+    if (foe.home.count0) pairCandidates.push([st, foe.home]);
+    for (const p of foe.pickets) pairCandidates.push([st, p]);
+  }
 }
 
 const aliveCount = g => g.ships.reduce((n, s) => n + (s.alive ? 1 : 0), 0);
 const aliveShips = g => g.ships.filter(s => s.alive);
 const groupAmmo  = g => g.ships.reduce((n, s) => n + (s.alive ? s.ammo : 0), 0);
 
+const ringAngle = (g, s) => (s.fi / Math.max(g.count0, 1)) * TAU + g.ringOm * simTime;
+
 function shipPos(g, s) {
   if (g.role === 'defense') {
-    const a = (s.fi / Math.max(g.count0, 1)) * TAU + simTime * 3e-5;
-    return V(g.pos.x + Math.cos(a) * 1.9e7, g.pos.y + Math.sin(a) * 1.9e7);
+    const a = ringAngle(g, s);
+    return V(g.planetHome.pos.x + R_DEF * Math.cos(a), g.planetHome.pos.y + R_DEF * Math.sin(a));
+  }
+  if (g.role === 'picket' && g.mode === 'station') {
+    const a = ringAngle(g, s);
+    return V(g.moon.pos.x + g.ringR * Math.cos(a), g.moon.pos.y + g.ringR * Math.sin(a));
+  }
+  if (g.role === 'strike' && g.phase === 'parked') {
+    const a = g.parkAng0 + g.parkOm * (simTime - g.parkT0) + (s.fi - (g.count0 - 1) / 2) * 0.025;
+    const tp = g.planetTarget;
+    return V(tp.pos.x + g.parkR * Math.cos(a), tp.pos.y + g.parkR * Math.sin(a));
   }
   const col = (s.fi / 3) | 0, row = s.fi % 3 - 1;
   const lx = -col * 6e6, ly = row * 7e6;
   const c = g.fdir.x, sn = g.fdir.y;
   return V(g.pos.x + lx * c - ly * sn, g.pos.y + lx * sn + ly * c);
+}
+
+function shipVel(g, s) {
+  if (g.role === 'defense') {
+    const a = ringAngle(g, s), vt = R_DEF * g.ringOm;
+    return V(g.planetHome.vel.x - vt * Math.sin(a), g.planetHome.vel.y + vt * Math.cos(a));
+  }
+  if (g.role === 'picket' && g.mode === 'station') {
+    const a = ringAngle(g, s), vt = g.ringR * g.ringOm;
+    return V(g.moon.vel.x - vt * Math.sin(a), g.moon.vel.y + vt * Math.cos(a));
+  }
+  if (g.role === 'strike' && g.phase === 'parked') {
+    const a = g.parkAng0 + g.parkOm * (simTime - g.parkT0) + (s.fi - (g.count0 - 1) / 2) * 0.025;
+    const vt = g.parkR * g.parkOm, tp = g.planetTarget;
+    return V(tp.vel.x - vt * Math.sin(a), tp.vel.y + vt * Math.cos(a));
+  }
+  return { ...g.vel };
 }
 
 /* ---------------- fleet guidance (1g flip-and-burn) ---------------- */
@@ -152,50 +278,113 @@ function stepGroup(g, dt) {
     g.vel = { ...g.planetHome.vel };
     return;
   }
+  if (g.role === 'picket') { stepPicket(g, dt); return; }
   if (aliveCount(g) === 0) { g.thrusting = false; return; }
 
   const tp = g.planetTarget;
   if (g.phase === 'parked') {
-    g.pos = add(tp.pos, g.parkOffset);
-    g.vel = { ...tp.vel };
+    // analytic two-body circular orbit around the captured target
+    const a = g.parkAng0 + g.parkOm * (simTime - g.parkT0);
+    const c = Math.cos(a), s = Math.sin(a), vt = g.parkR * g.parkOm;
+    g.pos = V(tp.pos.x + g.parkR * c, tp.pos.y + g.parkR * s);
+    g.vel = V(tp.vel.x - vt * s, tp.vel.y + vt * c);
+    g.fdir = V(-s, c);
     g.thrusting = false;
     return;
   }
-
-  const rel = sub(tp.pos, g.pos);
-  const d = len(rel) - STANDOFF;
-  const rhat = norm(rel);
-  const rv = sub(g.vel, tp.vel);          // velocity relative to target planet
-  const vAlong = dot(rv, rhat);
-
-  // terminal capture: kill residual velocity, slot into a parking orbit
-  if (d < 3e6 && len(rv) < 3000) {
-    const dv = G0 * dt;
-    if (len(rv) <= dv) {
-      g.vel = { ...tp.vel };
-      g.phase = 'parked';
-      g.parkOffset = sub(g.pos, tp.pos);
-      g.thrusting = false;
-      log(`${SIDES[g.side].navy} strike group holds station over ${tp.name}`, SIDES[g.side].cls);
+  // gravity-assist routing: once inbound, evaluate the target's moons.
+  // Only a massive moon on the near side is worth a flyby; tiny rocks are
+  // ruled out honestly.
+  if (!g.assistEval && g.phase === 'decel' && dist(g.pos, tp.pos) < 1.6e9) {
+    g.assistEval = true;
+    const navy = SIDES[g.side].navy, cls = SIDES[g.side].cls;
+    const names = tp.moons.map(m => m.name).join('/');
+    const cand = tp.moons.find(m => m.mu > 1e9
+      && dot(norm(sub(m.pos, tp.pos)), norm(sub(g.pos, tp.pos))) > 0.45);
+    if (cand) {
+      g.assistMoon = cand;
+      log(`${navy} strike group shapes approach for a ${cand.name} gravity assist`, cls);
+    } else if (tp.moons.some(m => m.mu > 1e9)) {
+      log(`${navy} strike group holds direct approach — ${names} out of position for an assist`, cls);
     } else {
-      g.vel = add(g.vel, mul(norm(rv), -dv));
-      g.thrusting = true; g.aim = mul(norm(rv), -1);
+      log(`${navy} strike group rules out ${names} flyby — too little mass to matter`, cls);
+    }
+  }
+  if (g.assistMoon && !g.assistDone) {
+    const m = g.assistMoon;
+    if (dist(g.pos, m.pos) < 1.5e7) {
+      g.assistDone = true;
+      g.phase = 'accel';
+      log(`${SIDES[g.side].navy} strike group slings through ${m.name}'s gravity well — final approach to ${tp.name}`, SIDES[g.side].cls);
+    } else {
+      transit(g, dt, m.pos, m.vel, 5e6, null);
+      pushTrail(g);
+      return;
+    }
+  }
+  transit(g, dt, tp.pos, tp.vel, STANDOFF, tp);
+  pushTrail(g);
+}
+
+// 1g burn toward a (possibly moving) target with flip-and-burn logic and
+// gravity feed-forward; if insertBody is given, capture into a circular
+// orbit around it on arrival.
+function transit(g, dt, tPos, tVel, arriveR, insertBody) {
+  const grav = gravAt(g.pos);
+  const rel = sub(tPos, g.pos);
+  const rhat = norm(rel);
+  const d = len(rel) - arriveR;
+  const rv = sub(g.vel, tVel);
+
+  // terminal: close & slow — burn onto the desired end-state velocity.
+  // Orbit insertion is sticky: the circularization burn itself exceeds the
+  // entry speed gate, so once committed we stay committed.
+  if (g.phase === 'insert' || (d < 3e6 && len(rv) < 3500)) {
+    let vdes;
+    if (insertBody) {
+      g.phase = 'insert';
+      const rb = sub(g.pos, insertBody.pos);
+      const tang = norm(V(-rb.y, rb.x));            // prograde
+      vdes = add(insertBody.vel, mul(tang, Math.sqrt(insertBody.mu / len(rb))));
+    } else {
+      vdes = tVel;
+    }
+    const dv = sub(vdes, g.vel);
+    if (len(dv) <= G0 * dt) {
+      g.vel = vdes;
+      g.thrusting = false;
+      if (insertBody) {
+        const rb = sub(g.pos, insertBody.pos);
+        g.parkR = len(rb);
+        g.parkAng0 = Math.atan2(rb.y, rb.x);
+        g.parkOm = Math.sqrt(insertBody.mu / g.parkR ** 3);
+        g.parkT0 = simTime;
+        g.phase = 'parked';
+        log(`${SIDES[g.side].navy} strike group brakes into ${insertBody.name} orbit`, SIDES[g.side].cls);
+      }
+    } else {
+      g.vel = add(add(g.vel, mul(norm(dv), G0 * dt)), mul(grav, dt));
+      g.thrusting = true;
+      g.aim = norm(dv);
     }
     g.pos = add(g.pos, mul(g.vel, dt));
-    pushTrail(g);
     return;
   }
 
-  const stop = vAlong > 0 ? vAlong * vAlong / (2 * G0) : 0;
+  const vAlong = dot(rv, rhat);
+  // braking authority is sapped by gravity pulling us toward the target
+  const gPull = Math.max(dot(grav, rhat), 0);
+  const aBrake = Math.max(G0 - gPull, 4);
+  const stop = vAlong > 0 ? vAlong * vAlong / (2 * aBrake) : 0;
   const wantDecel = g.phase === 'decel'
     ? (vAlong > 0 && stop > 0.90 * d)
     : (vAlong > 0 && stop >= d);
 
   let thrustDir;
   if (wantDecel) {
-    if (!g.flipped) {
+    if (!g.flipped && g.role === 'strike') {
       g.flipped = true;
-      log(`${SIDES[g.side].navy} strike group flips ship — deceleration burn for ${tp.name}`, SIDES[g.side].cls);
+      log(`${SIDES[g.side].navy} strike group flips ship — deceleration burn for ${g.planetTarget.name}`, SIDES[g.side].cls);
     }
     g.phase = 'decel';
     thrustDir = mul(norm(rv), -1);
@@ -206,13 +395,44 @@ function stepGroup(g, dt) {
     const corr = ll > 1 ? mul(lat, -Math.min(0.6, ll / 2000) / ll) : V();
     thrustDir = norm(add(rhat, corr));
   }
-  g.vel = add(g.vel, mul(thrustDir, G0 * dt));
+  g.vel = add(g.vel, add(mul(thrustDir, G0 * dt), mul(grav, dt)));
   g.pos = add(g.pos, mul(g.vel, dt));
   g.thrusting = true;
   g.aim = thrustDir;
-  if (len(g.vel) > 100) {
-    const vh = norm(sub(g.vel, tp.vel));
-    if (len(sub(g.vel, tp.vel)) > 500) g.fdir = vh;
+  if (len(sub(g.vel, tVel)) > 500) g.fdir = norm(sub(g.vel, tVel));
+}
+
+/* ---------------- moon pickets ---------------- */
+function stepPicket(g, dt) {
+  if (g.count0 === 0 || aliveCount(g) === 0) { g.thrusting = false; return; }
+  const m = g.moon;
+  const foe = GR[enemyOf(g.side)].strike;
+  const foeAlive = foe.count0 > 0 && aliveCount(foe) > 0;
+
+  if (g.mode === 'station') {
+    g.pos = { ...m.pos };
+    g.vel = { ...m.vel };
+    g.thrusting = false;
+    if (foeAlive && dist(foe.pos, g.planetHome.pos) < 8e8) {
+      g.mode = 'sortie';
+      g.phase = 'accel';
+      log(`${SIDES[g.side].navy} ${m.name} picket sorties — burning to intercept`, SIDES[g.side].cls);
+    }
+    return;
+  }
+  if (g.mode === 'sortie' && !foeAlive) {
+    g.mode = 'return';
+    g.phase = 'accel';
+    log(`${SIDES[g.side].navy} ${m.name} picket returns to station`, SIDES[g.side].cls);
+  }
+  if (g.mode === 'return') {
+    if (dist(g.pos, m.pos) < 3e6 && len(sub(g.vel, m.vel)) < 600) {
+      g.mode = 'station';
+      return;
+    }
+    transit(g, dt, m.pos, m.vel, 0, null);
+  } else {
+    transit(g, dt, foe.pos, foe.vel, 1.2e7, null);
   }
   pushTrail(g);
 }
@@ -229,6 +449,8 @@ function pushTrail(g) {
 function launchRange(relSpeed) { return 3e7 + relSpeed * 700; }
 
 function battleTitle(a, b) {
+  const pk = a.role === 'picket' ? a : (b.role === 'picket' ? b : null);
+  if (pk) return pk.moon.name.toUpperCase() + ' PICKET ENGAGEMENT';
   const pl = a.role === 'defense' ? a.planetHome : b.planetHome;
   return 'BATTLE FOR ' + pl.name.toUpperCase();
 }
@@ -263,18 +485,23 @@ function trySalvo(bt, g, enemy) {
   if (bt.dist > bt.LR) return;
   if (bt.closing < -5000 && bt.dist > 1e8) return;            // enemy receding fast
   if (simTime - (bt.lastSalvo[g.id] ?? -1e9) < SALVO_CD) return;
-  const targets = aliveShips(enemy);
+  // prefer targets with a clear line of sight (planets and moons block fire)
+  const allT = aliveShips(enemy);
+  const vis = allT.filter(ts => losClear(g.pos, shipPos(enemy, ts)));
+  const targets = vis.length ? vis : allT;
   let n = 0;
   for (const s of aliveShips(g)) {
     const k = Math.min(SALVO_SIZE, s.ammo);
     for (let i = 0; i < k; i++) {
-      s.ammo--;
       const tgt = targets[bt.tIdx++ % targets.length];
       const p0 = shipPos(g, s);
-      const aim = norm(sub(shipPos(enemy, tgt), p0));
+      const tgtP = shipPos(enemy, tgt);
+      if (!losClear(p0, tgtP)) continue;   // hold fire while the planet blocks the shot
+      s.ammo--;
+      const aim = norm(sub(tgtP, p0));
       bt.torps.push({
         id: torpId++, side: g.side, tGroup: enemy, tShip: tgt,
-        pos: p0, vel: add(g.vel, mul(aim, 200)),
+        pos: p0, vel: add(shipVel(g, s), mul(aim, 200)),
         alive: true, age: 0, recede: 0, tImp: Infinity, engaged: false
       });
       n++;
@@ -284,7 +511,11 @@ function trySalvo(bt, g, enemy) {
     bt.lastSalvo[g.id] = simTime;
     bt.lastTorpTime = simTime;
     stats.fired[g.side] += n;
-    log(`${SIDES[g.side].navy} ${g.role === 'defense' ? 'home fleet' : 'strike group'} launches ${n} torpedoes`, SIDES[g.side].cls);
+    const who = g.role === 'defense' ? 'home fleet' : g.role === 'picket' ? `${g.moon.name} picket` : 'strike group';
+    if (n >= 3 || !bt.loggedSalvo) {
+      bt.loggedSalvo = true;
+      log(`${SIDES[g.side].navy} ${who} launches ${n} torpedo${n > 1 ? 'es' : ''}`, SIDES[g.side].cls);
+    }
   }
 }
 
@@ -304,7 +535,7 @@ function updateTorp(bt, t, dt) {
   }
 
   const tpos = shipPos(t.tGroup, t.tShip);
-  const tvel = t.tGroup.vel;
+  const tvel = shipVel(t.tGroup, t.tShip);
   const relP = sub(tpos, t.pos);
   const d = len(relP);
   const relV = sub(tvel, t.vel);
@@ -314,12 +545,14 @@ function updateTorp(bt, t, dt) {
   if (closing < 0) { t.recede += dt; if (t.recede > 30) { t.alive = false; return; } }
   else t.recede = 0;
 
-  // proportional pursuit with lead
+  // proportional pursuit with lead, under planetary gravity
   const tgo = Math.min(d / Math.max(closing, 100), 900);
   const desired = sub(add(tpos, mul(tvel, tgo)), add(t.pos, mul(t.vel, tgo)));
-  const acc = mul(norm(desired), TORP_ACC);
+  const grav = gravAt(t.pos);
+  const acc = add(mul(norm(desired), TORP_ACC), grav);
 
   // integrate + closest-approach hit test within the substep
+  const prev = t.pos;
   const p0 = sub(t.pos, tpos);
   const v0 = add(sub(t.vel, tvel), mul(acc, dt * 0.5));
   t.vel = add(t.vel, mul(acc, dt));
@@ -332,6 +565,19 @@ function updateTorp(bt, t, dt) {
     // proximity fusing degrades at extreme closing speeds (head-on passes)
     const pk = Math.pow(5e4 / Math.max(len(v0), 5e4), 0.3);
     if (Math.random() < pk) killShip(t.tGroup, t.tShip, tpos);
+    return;
+  }
+  // terrain: torpedoes splash against planets and moons
+  const seg = sub(t.pos, prev);
+  const den = Math.max(dot(seg, seg), 1e-9);
+  for (const c of COLLIDERS) {
+    const tt = clamp(dot(sub(c.pos, prev), seg) / den, 0, 1);
+    const q = add(prev, mul(seg, tt));
+    if (dist(q, c.pos) < c.colR) {
+      t.alive = false;
+      explosions.push({ pos: q, wall0: wallNow, big: false });
+      break;
+    }
   }
 }
 
@@ -342,14 +588,16 @@ function killShip(g, s, atPos) {
   explosions.push({ pos: atPos, wall0: wallNow, big: true });
   log(`${SIDES[g.side].navy} ${s.name} destroyed`, SIDES[g.side].cls);
   if (aliveCount(g) === 0) {
-    const what = g.role === 'defense' ? `home fleet over ${g.planetHome.name}` : 'strike group';
+    const what = g.role === 'defense' ? `home fleet over ${g.planetHome.name}`
+      : g.role === 'picket' ? `${g.moon.name} picket` : 'strike group';
     log(`${SIDES[g.side].navy} ${what} ANNIHILATED`, 'sys');
   }
 }
 
 function stepPDC(bt, dt) {
   for (const g of [bt.a, bt.b]) {
-    const threats = bt.torps.filter(t => t.alive && t.tGroup === g && t.tImp < PDC_WINDOW);
+    const threats = bt.torps.filter(t => t.alive && t.tGroup === g && t.tImp < PDC_WINDOW
+      && losClear(shipPos(g, t.tShip), t.pos));
     if (!threats.length) continue;
     const nAlive = aliveCount(g);
     if (!nAlive) continue;
@@ -412,7 +660,7 @@ function checkCaptures() {
     if (g.phase !== 'parked' || aliveCount(g) === 0) continue;
     const tgtKey = enemyOf(g.side);
     if (captured[tgtKey]) continue;
-    if (aliveCount(GR[tgtKey].home) > 0) continue;
+    if (aliveCount(GR[tgtKey].home) > 0 || GR[tgtKey].pickets.some(p => aliveCount(p) > 0)) continue;
     if (battles.some(bt => !bt.done && (bt.a === g || bt.b === g))) continue;
     captured[tgtKey] = g.side;
     log(`${SIDES[tgtKey].planet.name.toUpperCase()} HAS FALLEN — ${SIDES[g.side].navy} controls its orbitals`, 'sys');
@@ -423,7 +671,14 @@ function checkGameOver() {
   if (gameOver || !running) return;
   const resolved = attackGroups.every(g => aliveCount(g) === 0 || g.phase === 'parked');
   const quiet = battles.every(bt => bt.done);
-  if (resolved && quiet) {
+  // a picket still burning toward a live enemy means the fight isn't over
+  const pendingPicket = ['earth', 'mars'].some(k => {
+    const e = GR[enemyOf(k)].strike;
+    return GR[k].pickets.some(p =>
+      aliveCount(p) > 0 && p.mode === 'sortie'
+      && e.count0 > 0 && aliveCount(e) > 0 && groupAmmo(p) + groupAmmo(e) > 0);
+  });
+  if (resolved && quiet && !pendingPicket) {
     gameOver = true;
     gameEndWall = wallNow;
     log('— SIMULATION COMPLETE —', 'sys');
@@ -510,7 +765,7 @@ function desiredTimeScale() {
   }
   const next = upcomingEventDt();
   if (!isFinite(next)) return 400;
-  return clamp(next / 3, 30, 120000);
+  return clamp(next / 3, 60, 120000);
 }
 
 /* ===================================================================
@@ -532,7 +787,7 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-function worldScale() { return Math.min(W, H) / (3.45 * AU); }
+function worldScale() { return Math.min(W, H) / (3.55 * AU); }
 function w2s(p) { const s = worldScale(); return V(W / 2 + p.x * s, H / 2 + p.y * s); }
 
 function drawShipTri(x, y, ang, size, color) {
@@ -563,12 +818,14 @@ function drawWorld() {
 
   const s = worldScale();
 
-  // orbits
+  // orbits (true ellipses; the Sun sits at one focus)
   ctx.strokeStyle = 'rgba(160,190,255,0.09)';
   ctx.lineWidth = 1;
   for (const p of [earth, mars]) {
+    const ecx = W / 2 - p.a * p.ecc * Math.cos(p.varpi) * s;
+    const ecy = H / 2 - p.a * p.ecc * Math.sin(p.varpi) * s;
     ctx.beginPath();
-    ctx.arc(W / 2, H / 2, p.orbitR * s, 0, TAU);
+    ctx.ellipse(ecx, ecy, p.a * s, p.b * s, p.varpi, 0, TAU);
     ctx.stroke();
   }
 
@@ -717,16 +974,27 @@ function drawInset(bt, ix, iy, isz, dtWall) {
     }
   }
 
-  // planet
-  if (bt.planet && dist(bt.planet.pos, cw) < half * 1.8) {
-    const pp = toI(bt.planet.pos);
-    const pr = Math.max(bt.planet.realR * si, 2);
+  // planets & moons in view (real radii, with moon orbit guides)
+  for (const body of COLLIDERS) {
+    if (dist(body.pos, cw) > half * 1.9) continue;
+    if (body.parent) {
+      const par = toI(body.parent.pos);
+      ctx.strokeStyle = 'rgba(160,190,255,0.10)';
+      ctx.beginPath(); ctx.arc(par.x, par.y, body.a * si, 0, TAU); ctx.stroke();
+    }
+    const pp = toI(body.pos);
+    const pr = Math.max(body.realR * si, 1.6);
     const gl = ctx.createRadialGradient(pp.x, pp.y, pr * 0.5, pp.x, pp.y, pr * 1.25);
-    gl.addColorStop(0, bt.planet.color);
-    gl.addColorStop(0.8, bt.planet.color);
+    gl.addColorStop(0, body.color);
+    gl.addColorStop(0.8, body.color);
     gl.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = gl;
     ctx.beginPath(); ctx.arc(pp.x, pp.y, pr * 1.25, 0, TAU); ctx.fill();
+    if (body.parent) {
+      ctx.fillStyle = 'rgba(170,190,220,0.55)';
+      ctx.font = '8px monospace'; ctx.textAlign = 'center';
+      ctx.fillText(body.name.toUpperCase(), pp.x, pp.y - pr - 4);
+    }
   }
 
   const frameVel = mul(add(bt.a.vel, bt.b.vel), 0.5);
@@ -831,11 +1099,12 @@ function fmtKm(m) {
   if (km >= 1e3) return Math.round(km / 1e3) + 'k km';
   return Math.round(km) + ' km';
 }
-const PHASE_LABEL = { accel: 'ACCEL 1g ▸', decel: 'DECEL 1g ◂', parked: 'ON STATION', orbit: 'IN ORBIT' };
+const PHASE_LABEL = { accel: 'ACCEL 1g ▸', decel: 'DECEL 1g ◂', parked: 'IN ENEMY ORBIT', orbit: 'IN ORBIT' };
+const PICKET_LABEL = { station: 'on station', sortie: 'SORTIE ▸', return: 'returning' };
 
 function panelHTML(key) {
   const side = SIDES[key];
-  const strike = GR[key].strike, home = GR[key].home;
+  const strike = GR[key].strike, home = GR[key].home, pickets = GR[key].pickets;
   let out = `<div class="hdr">${side.navy} · ${side.planet.name.toUpperCase()}</div>`;
   if (strike.count0 === 0) {
     out += `<span class="dim">STRIKE  — none committed</span>\n`;
@@ -856,7 +1125,14 @@ function panelHTML(key) {
       ? `HOME    <span class="dim">0/${home.count0} — DESTROYED</span>\n`
       : `HOME    ${n}/${home.count0} · ${side.planet.name} orbit\n`;
   }
-  out += `<span class="dim">TORPS   ${groupAmmo(strike) + groupAmmo(home)} in tubes · ${stats.fired[key]} fired</span>`;
+  for (const picket of pickets) {
+    const n = aliveCount(picket);
+    out += n === 0
+      ? `PICKET  <span class="dim">0/${picket.count0} — DESTROYED</span>\n`
+      : `PICKET  ${n}/${picket.count0} · ${picket.moon.name} ${PICKET_LABEL[picket.mode] || ''}\n`;
+  }
+  const ammo = groupAmmo(strike) + groupAmmo(home) + pickets.reduce((a, p) => a + groupAmmo(p), 0);
+  out += `<span class="dim">TORPS   ${ammo} in tubes · ${stats.fired[key]} fired</span>`;
   return out;
 }
 
@@ -954,12 +1230,17 @@ function refreshAllocScreen() {
   $('allocSub').innerHTML =
     `Commander, divide your <b>${N_SHIPS} warships</b>.<br>` +
     `The strike force burns at 1g for <b>${SIDES[enemyOf(allocPhase)].planet.name}</b>; ` +
-    `the home fleet holds your orbitals. Your choice stays sealed.`;
+    `the home fleet holds your orbitals, with a third of it picketing ` +
+    `<b>${side.moons.map(m => m.name).join(' and ')}</b> to flank any attacker. Your choice stays sealed.`;
   const att = +$('allocSlider').value, def = N_SHIPS - att;
+  const pk = Math.floor(def / 3);
   const col = side.color;
-  $('allocReadout').innerHTML =
+  let lines =
     `STRIKE FORCE &nbsp;<span class="ships" style="color:${col}">${'▲'.repeat(att) || '—'}</span>&nbsp; ${att}<br>` +
-    `HOME FLEET &nbsp;&nbsp;&nbsp;<span class="ships" style="color:${col}">${'△'.repeat(def) || '—'}</span>&nbsp; ${def}`;
+    `HOME FLEET &nbsp;&nbsp;&nbsp;<span class="ships" style="color:${col}">${'△'.repeat(def - pk) || '—'}</span>&nbsp; ${def - pk}`;
+  for (const { moon, n } of picketPlan(allocPhase, pk))
+    lines += `<br>${moon.name.toUpperCase()} PICKET&nbsp;&nbsp;<span class="ships" style="color:${col}">${'△'.repeat(n) || '—'}</span>&nbsp; ${n}`;
+  $('allocReadout').innerHTML = lines;
 }
 
 $('btnBegin').onclick = () => { allocPhase = 'earth'; $('allocSlider').value = 8; refreshAllocScreen(); showScreen('s-alloc'); };
@@ -989,7 +1270,9 @@ function startSim() {
       log(`${s.navy} strike group (${alloc[key]} ships) departs ${s.planet.name} — 1g burn`, s.cls);
     else
       log(`${s.navy} commits no ships to the attack — full defensive posture`, s.cls);
-    if (N_SHIPS - alloc[key] > 0)
-      log(`${s.navy} home fleet (${N_SHIPS - alloc[key]} ships) holds ${s.planet.name} orbit`, s.cls);
+    if (GR[key].home.count0 > 0)
+      log(`${s.navy} home fleet (${GR[key].home.count0} ships) holds ${s.planet.name} orbit`, s.cls);
+    for (const p of GR[key].pickets)
+      log(`${s.navy} stations ${p.count0}-ship picket at ${p.moon.name}`, s.cls);
   }
 }
