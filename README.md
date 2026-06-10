@@ -1,8 +1,8 @@
 # 1G — The Earth–Mars War
 
-A web-based, *Expanse*-style fleet combat simulation. Two hidden-information
+A web-based, hard-SF fleet combat simulation. Two hidden-information
 players split their fleets between attack and defense, then watch the war
-unfold under (mostly) honest physics: constant 1 g Epstein-drive burns across
+unfold under (mostly) honest physics: constant 1 g fusion-torch burns across
 interplanetary distances, torpedo salvos, and point-defence cannon fire.
 
 ## Running it
@@ -19,10 +19,10 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 
 ## How a game plays out
 
-1. **Earth commander (UNN)** secretly splits 12 warships between a *strike
-   force* (sent to Mars) and a *home fleet* (holds Earth orbit), then walks
-   away from the console.
-2. **Mars commander (MCRN)** does the same for Mars.
+1. **Earth commander (People's Fleet of Earth, PFE)** secretly splits 12
+   warships between a *strike force* (sent to Mars) and a *home fleet* (holds
+   Earth orbit), then walks away from the console.
+2. **Mars commander (United Mars Space Force, UMSF)** does the same for Mars.
 3. Both strike forces light their drives simultaneously and fly a
    **brachistochrone trajectory**: accelerate at 1 g to the midpoint, flip
    ship, decelerate at 1 g, and brake into a standoff orbit at the enemy

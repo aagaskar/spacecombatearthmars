@@ -1,8 +1,8 @@
 'use strict';
 /* =====================================================================
    1G — The Earth–Mars War
-   An Expanse-style fleet combat simulation.
-   Real scale: meters, seconds, 1g Epstein-drive brachistochrone transits.
+   A hard-SF fleet combat simulation.
+   Real scale: meters, seconds, 1g torch-drive brachistochrone transits.
    ===================================================================== */
 
 /* ---------------- constants ---------------- */
@@ -57,14 +57,16 @@ const mars  = makePlanet('Mars',  '#ff5a36', 1.524 * AU, 123, 5, 3.39e6);
 
 const SIDES = {
   earth: {
-    key: 'earth', navy: 'UNN', color: '#52a7ff', planet: earth, cls: 'e',
-    names: ['Agatha King', 'Thomas Prince', 'Tripoli', 'Jimenez', 'Montenegro', 'Kenosha',
-            'Sao Paulo', 'Mikhaylov', 'Ottawa', 'Crucible', 'Valiant', 'Prometheus']
+    key: 'earth', navy: 'PFE', fullName: "People's Fleet of Earth",
+    color: '#52a7ff', planet: earth, cls: 'e',
+    names: ['Meridian', 'Concord', 'Stalwart', 'Aegis', 'Endeavour', 'Lodestar',
+            'Sentinel', 'Bastion', 'Resolute', 'Vanguard', 'Tempest', 'Horizon']
   },
   mars: {
-    key: 'mars', navy: 'MCRN', color: '#ff6a45', planet: mars, cls: 'm',
-    names: ['Donnager', 'Scirocco', 'Hammurabi', 'Xuesen', 'Bahram', 'Sagarmatha',
-            'Kittur Chennamma', 'Dushanbe', 'Iani Chaos', 'Karakum', 'Cydonia', 'Vesta']
+    key: 'mars', navy: 'UMSF', fullName: 'United Mars Space Force',
+    color: '#ff6a45', planet: mars, cls: 'm',
+    names: ['Olympus', 'Tharsis', 'Valles', 'Ares', 'Acidalia', 'Hellas',
+            'Elysium', 'Arcadia', 'Solis', 'Argyre', 'Utopia', 'Syrtis']
   }
 };
 const enemyOf = k => k === 'earth' ? 'mars' : 'earth';
@@ -436,10 +438,10 @@ function showEndScreen() {
     S.innerHTML = 'Both homeworlds have fallen to the other\'s strike force.<br>Two flags over two broken worlds.';
   } else if (eFell) {
     T.textContent = 'MARS VICTORIOUS'; T.className = 'marsC';
-    S.innerHTML = 'The MCRN strike force holds Earth orbit unopposed.';
+    S.innerHTML = 'The UMSF strike force holds Earth orbit unopposed.';
   } else if (mFell) {
     T.textContent = 'EARTH VICTORIOUS'; T.className = 'earthC';
-    S.innerHTML = 'The UNN strike force holds Mars orbit unopposed.';
+    S.innerHTML = 'The PFE strike force holds Mars orbit unopposed.';
   } else if (stats.fired.earth + stats.fired.mars === 0) {
     T.textContent = 'COLD STANDOFF'; T.className = 'amberC';
     S.innerHTML = 'Neither commander committed ships to the attack.<br>The war never started.';
@@ -452,10 +454,10 @@ function showEndScreen() {
   }
   document.getElementById('endStats').textContent =
     `Mission time        ${fmtTime(simTime)}\n` +
-    `UNN ships lost      ${stats.lost.earth} of ${N_SHIPS}\n` +
-    `MCRN ships lost     ${stats.lost.mars} of ${N_SHIPS}\n` +
-    `Torpedoes fired     UNN ${stats.fired.earth} · MCRN ${stats.fired.mars}\n` +
-    `PDC intercepts      UNN ${stats.pdc.earth} · MCRN ${stats.pdc.mars}`;
+    `PFE ships lost      ${stats.lost.earth} of ${N_SHIPS}\n` +
+    `UMSF ships lost     ${stats.lost.mars} of ${N_SHIPS}\n` +
+    `Torpedoes fired     PFE ${stats.fired.earth} · UMSF ${stats.fired.mars}\n` +
+    `PDC intercepts      PFE ${stats.pdc.earth} · UMSF ${stats.pdc.mars}`;
   showScreen('s-end');
   document.getElementById('overlay').style.display = 'flex';
 }
@@ -980,7 +982,7 @@ function startSim() {
   $('hud').hidden = false;
   simTime = 0; timeScale = 1; autoTime = true; paused = false;
   running = true;
-  log('WAR DECLARED — both fleets light their Epstein drives', 'sys');
+  log('WAR DECLARED — both fleets light their torch drives', 'sys');
   for (const key of ['earth', 'mars']) {
     const s = SIDES[key];
     if (alloc[key] > 0)
