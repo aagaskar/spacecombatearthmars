@@ -148,6 +148,7 @@ let captured = { earth: null, mars: null }; // side key of conqueror, or null
 let torpId = 0;
 let stats = { fired: { earth: 0, mars: 0 }, pdc: { earth: 0, mars: 0 }, lost: { earth: 0, mars: 0 } };
 let wallNow = 0;
+let selectedShip = null;        // {side, name} — roster click opens a closeup inset
 
 /* ---------------- logging ---------------- */
 const logEntries = [];
@@ -765,7 +766,8 @@ function desiredTimeScale() {
   }
   const next = upcomingEventDt();
   if (!isFinite(next)) return 400;
-  return clamp(next / 3, 60, 120000);
+  // paced so a typical interplanetary transit takes about a minute of wall time
+  return clamp(next / 5, 50, 80000);
 }
 
 /* ===================================================================
@@ -793,8 +795,76 @@ window.addEventListener('resize', resize);
 resize();
 
 /* ---------------- battle insets ---------------- */
-function activeInsets() {
-  return battles.filter(bt => !bt.done || wallNow - bt.doneWall < 2.5).slice(-2);
+// Always-on home-space views for both planets, plus tracking views that
+// follow each strike force through transit, flybys and intercepts.
+const MOONS_ALL = [luna, phobos, deimos];
+
+function insetDescriptors() {
+  if (!GR) return [];
+  const list = [];
+  for (const key of ['earth', 'mars']) {
+    const planet = SIDES[key].planet;
+    const foe = GR[enemyOf(key)].strike;
+    let half = 4.8e7;
+    let title = planet.name.toUpperCase() + ' — HOME SPACE';
+    let battle = null;
+    if (foe.count0 && aliveCount(foe) > 0) {
+      const d = dist(foe.pos, planet.pos);
+      if (d < 3.5e8) half = Math.max(half, d * 0.72);
+      if (foe.phase === 'parked')
+        title = planet.name.toUpperCase() + (captured[key] ? ' — OCCUPIED' : ' — ORBIT CONTESTED');
+    }
+    for (const bt of battles) {
+      if (bt.done) continue;
+      const bx = (bt.a.pos.x + bt.b.pos.x) / 2, by = (bt.a.pos.y + bt.b.pos.y) / 2;
+      if (Math.hypot(bx - planet.pos.x, by - planet.pos.y) < 4e8) {
+        title = bt.title;
+        battle = bt;
+        half = Math.max(half, dist(bt.a.pos, bt.b.pos) * 0.62);
+      }
+    }
+    list.push({ id: key, title, cx: planet.pos.x, cy: planet.pos.y, half, col: key === 'earth' ? 0 : 1, battle });
+  }
+  for (const key of ['earth', 'mars']) {
+    const g = GR[key].strike;
+    if (!g.count0 || aliveCount(g) === 0 || g.phase === 'parked') continue;
+    let half = 3.5e7;
+    let title = `${SIDES[key].navy} STRIKE — ${g.phase === 'decel' ? 'DECEL' : g.phase === 'insert' ? 'ORBIT INSERTION' : 'ACCEL'} 1g`;
+    let battle = null;
+    if (g.assistMoon && !g.assistDone && dist(g.pos, g.assistMoon.pos) < 6e8)
+      title = `${SIDES[key].navy} STRIKE — ${g.assistMoon.name.toUpperCase()} FLYBY`;
+    for (const m of MOONS_ALL) {
+      const d = dist(g.pos, m.pos);
+      if (d < 4e8) half = Math.max(half, Math.min(d * 0.8, 4e8));
+    }
+    for (const bt of battles) {
+      if (bt.done || (bt.a !== g && bt.b !== g)) continue;
+      title = bt.title;
+      battle = bt;
+      half = Math.max(half, dist(bt.a.pos, bt.b.pos) * 0.62);
+    }
+    list.push({ id: 'strike-' + key, title, cx: g.pos.x, cy: g.pos.y, half, col: key === 'earth' ? 0 : 1, battle });
+  }
+  // ship closeup from a roster click
+  if (selectedShip) {
+    let found = null, fg = null;
+    for (const g of allGroups) {
+      if (g.side !== selectedShip.side) continue;
+      const sh = g.ships.find(s => s.name === selectedShip.name && s.alive);
+      if (sh) { found = sh; fg = g; break; }
+    }
+    if (found) {
+      const p = shipPos(fg, found);
+      list.push({
+        id: 'ship', title: `${SIDES[fg.side].navy} ${found.name.toUpperCase()}`,
+        cx: p.x, cy: p.y, half: 8e6, zoomShips: 2.4,
+        col: selectedShip.side === 'earth' ? 0 : 1, battle: null
+      });
+    } else {
+      selectedShip = null;       // ship destroyed: drop the view
+    }
+  }
+  return list;
 }
 
 /* ---------------- HUD ---------------- */
@@ -851,6 +921,15 @@ function panelHTML(key) {
   }
   const ammo = groupAmmo(strike) + groupAmmo(home) + pickets.reduce((a, p) => a + groupAmmo(p), 0);
   out += `<span class="dim">TORPS   ${ammo} in tubes · ${stats.fired[key]} fired</span>`;
+  // clickable ship roster — opens a closeup inset
+  out += '<div class="roster">';
+  for (const g of [strike, home, ...pickets])
+    for (const s of g.ships) {
+      const sel = selectedShip && selectedShip.side === key && selectedShip.name === s.name;
+      out += `<span class="rost${s.alive ? '' : ' dead'}${sel ? ' sel' : ''}" data-name="${s.name}">` +
+        `${s.alive ? '▲' : '✕'} ${s.name}</span>`;
+    }
+  out += '</div>';
   return out;
 }
 
@@ -912,7 +991,7 @@ function frame(now) {
       groups: GR ? allGroups : [],
       attackGroups: GR ? attackGroups : [],
       battles,
-      insets: running ? activeInsets() : [],
+      insets: running ? insetDescriptors() : [],
       explosions
     });
   }
@@ -934,7 +1013,23 @@ window.addEventListener('keydown', e => {
   else if (e.key === '+' || e.key === '=') { autoTime = false; timeScale = clamp(timeScale * 2, 0.5, 2e5); }
   else if (e.key === '-' || e.key === '_') { autoTime = false; timeScale = clamp(timeScale / 2, 0.5, 2e5); }
   else if (e.key === 'a' || e.key === 'A') autoTime = true;
+  else if (e.key === 'Escape') selectedShip = null;
 });
+
+/* ---------------- roster clicks ---------------- */
+for (const key of ['earth', 'mars']) {
+  const panel = $(key === 'earth' ? 'panelL' : 'panelR');
+  if (panel && typeof panel.addEventListener === 'function') {
+    panel.addEventListener('click', e => {
+      const r = e.target.closest && e.target.closest('.rost');
+      if (!r || r.classList.contains('dead')) return;
+      const name = r.dataset.name;
+      selectedShip = (selectedShip && selectedShip.side === key && selectedShip.name === name)
+        ? null : { side: key, name };
+      hudTimer = 0;   // refresh selection highlight immediately
+    });
+  }
+}
 
 /* ---------------- setup flow ---------------- */
 let allocPhase = 'earth';

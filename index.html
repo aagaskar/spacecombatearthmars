@@ -36,7 +36,14 @@
   #tscale{margin-top:2px;font-size:12px;color:#7d96bf;letter-spacing:1px}
   .panel{position:absolute;top:12px;min-width:230px;padding:8px 12px;font-size:12px;line-height:1.55;
     background:rgba(6,12,26,.72);border:1px solid rgba(90,130,190,.25);border-radius:6px;
-    white-space:pre;backdrop-filter:blur(2px)}
+    white-space:pre;backdrop-filter:blur(2px);pointer-events:auto}
+  .roster{white-space:normal;display:grid;grid-template-columns:1fr 1fr;gap:0 10px;
+    margin-top:6px;padding-top:5px;border-top:1px solid rgba(90,130,190,.2)}
+  .rost{font-size:10.5px;line-height:1.6;cursor:pointer;border-radius:3px;padding:0 3px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rost:hover{background:rgba(120,170,240,.14)}
+  .rost.dead{color:#54627e;text-decoration:line-through;cursor:default}
+  .rost.sel{background:rgba(120,170,240,.22);outline:1px solid rgba(120,170,240,.45)}
   #panelL{left:12px;border-left:3px solid var(--earth)}
   #panelR{right:12px;border-left:3px solid var(--mars)}
   .panel .hdr{font-size:13px;letter-spacing:2px;margin-bottom:3px}
@@ -81,7 +88,7 @@
   <div id="panelL" class="panel"></div>
   <div id="panelR" class="panel"></div>
   <div id="log"></div>
-  <div id="help">drag rotate &nbsp;·&nbsp; scroll zoom &nbsp;·&nbsp; SPACE pause &nbsp;·&nbsp; + / − time warp &nbsp;·&nbsp; A auto</div>
+  <div id="help">drag rotate · right-drag pan · scroll / pinch zoom at cursor · click roster for ship cam · SPACE pause · +/− warp · A auto</div>
 </div>
 
 <div id="overlay">

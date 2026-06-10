@@ -56,20 +56,27 @@ no CDN, no build step; software fallback message if WebGL is unavailable).
 - The main view is an oblique perspective of the solar system: Sun glow and
   point-light, true orbit ellipses, textured planets with day/night
   terminators, fleet meshes with flickering drive plumes, and additive
-  trajectory trails — including the dogleg of a Luna gravity-assist
-  approach. **Drag to orbit the camera, scroll to zoom.**
-- Active engagements get **3D inset viewports** with their own scenes and
-  slowly drifting cinematic cameras: planets and moons at real scale (lit
-  by the actual sun direction, with atmosphere rim glow), individual ship
-  hulls, torpedo swarms with motion streaks, jittering PDC tracer fire,
-  explosion blooms, and a polar tactical grid for depth.
+  trajectory trails. **Drag to orbit, right-drag to pan, and scroll or
+  pinch to zoom — anchored Google-Maps style at the point under the
+  cursor/fingers.**
+- **Always-on 3D inset viewports** for both homeworlds show their orbital
+  space (home fleet, moons, pickets) at all times, zooming automatically to
+  frame battles when they start. Two more **tracking insets follow each
+  strike force** through transit — including Luna flybys and picket
+  intercepts — with slowly drifting cinematic cameras. All insets render
+  planets and moons at real scale, lit from the true sun direction, with
+  ship hulls, torpedo streaks, PDC tracers, explosion blooms and a polar
+  tactical grid.
+- Each side's HUD panel carries a **clickable ship roster**: click any ship
+  for a closeup "ship cam" inset of that vessel and its environs (click
+  again or press `ESC` to dismiss; the view dies with the ship).
 - A mission clock shows elapsed time (`T+ 2d 21:05:38`), and time
-  **automatically warps** — up to ~×100,000 during the dull cruise, easing
-  down to ×3 for terminal torpedo defence — so a three-day war plays out in
-  about two minutes. (`SPACE` pauses, `+`/`−` overrides the warp, `A`
-  returns to automatic.)
-- Fleet status panels, a timestamped event log, planet/moon/fleet labels
-  and inset chrome are crisp DOM overlays on top of the GL canvas.
+  **automatically warps** — up to ~×80,000 in cruise, easing down to ×3 for
+  terminal torpedo defence — paced so a transit takes about a minute and a
+  full war roughly three. (`SPACE` pauses, `+`/`−` overrides, `A` resumes
+  auto.)
+- Fleet panels, the event log, labels and inset chrome are crisp DOM
+  overlays on top of the GL canvas.
 
 ## Physics & combat model
 

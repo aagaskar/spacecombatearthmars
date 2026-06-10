@@ -10,7 +10,7 @@ window.GFX = (function () {
   let renderer = null, env = null, ready = false;
   let W = 1280, H = 720;
   let sys = null;                 // system-view bundle
-  const insetViews = [];          // pooled InsetView (max 2)
+  const insetMap = new Map();     // inset descriptor id -> pooled InsetView
   let labelLayer = null;
   const labels = new Map();       // key -> {el, used}
 
@@ -290,8 +290,8 @@ window.GFX = (function () {
 
     const explosionPool = makeSpritePool(scene, glowTex('rgba(255,225,170,1)'), 10);
 
-    const cam = new THREE.PerspectiveCamera(45, W / H, 0.5, 12000);
-    const camState = { azim: -1.15, elev: 0.62, dist: 760 };
+    const cam = new THREE.PerspectiveCamera(45, W / H, 0.2, 12000);
+    const camState = { azim: -1.15, elev: 0.62, dist: 760, tx: 0, tz: 0 };
 
     return { scene, cam, camState, sunGlow, planetMeshes, planetGlows, defRings, fleets, trails, reticles, explosionPool };
   }
@@ -332,13 +332,13 @@ window.GFX = (function () {
 
   function renderSystem(view) {
     const S = sys;
-    // camera from input state
+    // camera from input state (orbits a movable target on the ecliptic)
     const cs = S.camState;
     S.cam.position.set(
-      Math.cos(cs.azim) * Math.cos(cs.elev) * cs.dist,
+      cs.tx + Math.cos(cs.azim) * Math.cos(cs.elev) * cs.dist,
       Math.sin(cs.elev) * cs.dist,
-      Math.sin(cs.azim) * Math.cos(cs.elev) * cs.dist);
-    S.cam.lookAt(0, 0, 0);
+      cs.tz + Math.sin(cs.azim) * Math.cos(cs.elev) * cs.dist);
+    S.cam.lookAt(cs.tx, 0, cs.tz);
     S.cam.aspect = W / H;
     S.cam.updateProjectionMatrix();
     S.cam.updateMatrixWorld();
@@ -350,7 +350,9 @@ window.GFX = (function () {
       const m = S.planetMeshes.get(p.name);
       m.position.set(p.pos.x / SYS, 0, p.pos.y / SYS);
       m.rotation.y = view.simTime / (p.name === 'Earth' ? 86164 : 88775) * TAU;
-      S.planetGlows.get(p.name).position.copy(m.position);
+      const glow = S.planetGlows.get(p.name);
+      glow.position.copy(m.position);
+      glow.material.opacity = 0.4 * Math.min(Math.max((cs.dist - 60) / 400, 0.08), 1);
       const ring = S.defRings.get(p.name);
       ring.position.copy(m.position);
       const sideKey = p.name === 'Earth' ? 'earth' : 'mars';
@@ -511,15 +513,26 @@ window.GFX = (function () {
     return s;
   }
 
-  function renderInset(iv, bt, rect, view) {
+  function shipHeading(g, sh) {
+    let base = null;
+    if (g.role === 'defense') base = g.planetHome.vel;
+    else if (g.role === 'picket' && g.mode === 'station') base = g.moon.vel;
+    else if (g.role === 'strike' && g.phase === 'parked') base = g.planetTarget.vel;
+    else return g.aim;
+    const v = env.helpers.shipVel(g, sh);
+    const dx = v.x - base.x, dy = v.y - base.y;
+    const l = Math.hypot(dx, dy);
+    return l > 1 ? { x: dx / l, y: dy / l } : g.fdir;
+  }
+
+  function renderInset(iv, desc, rect, view) {
     const H_ = env.helpers;
-    const cx = (bt.a.pos.x + bt.b.pos.x) / 2, cy = (bt.a.pos.y + bt.b.pos.y) / 2;
-    const sep = Math.hypot(bt.a.pos.x - bt.b.pos.x, bt.a.pos.y - bt.b.pos.y);
-    const targetHalf = Math.max(sep * 0.62, 3.2e7);
-    bt.half = bt.half == null ? targetHalf
-      : bt.half + (targetHalf - bt.half) * (1 - Math.exp(-1.8 * view.dtWall));
-    const halfU = bt.half / BTL;
+    const cx = desc.cx, cy = desc.cy;
+    iv.half = iv.half == null ? desc.half
+      : iv.half + (desc.half - iv.half) * (1 - Math.exp(-1.8 * view.dtWall));
+    const halfU = iv.half / BTL;
     const toL = p => new THREE.Vector3((p.x - cx) / BTL, 0, (p.y - cy) / BTL);
+    const ZP = new THREE.Vector3(0, 0, 1);
 
     // camera: slow cinematic drift
     const az = view.wallNow * 0.07 + iv.idx * 2.4, el = 0.46;
@@ -553,55 +566,72 @@ window.GFX = (function () {
           body.name.toUpperCase(), 'rgba(170,190,220,0.7)', 8);
     }
 
-    // ships
-    const shipScale = halfU * 0.045;
+    // ships: every group inside this region
+    const shipScale = halfU * 0.045 * (desc.zoomShips || 1);
     let si = 0;
-    for (const g of [bt.a, bt.b]) {
-      const other = g === bt.a ? bt.b : bt.a;
+    for (const g of view.groups) {
+      if (H_.aliveCount(g) === 0) continue;
+      if (Math.hypot(g.pos.x - cx, g.pos.y - cy) > iv.half * 2.2) continue;
       const color = env.SIDES[g.side].color;
-      let dir;
-      if (g.role === 'defense') dir = null; // face the enemy, per ship
-      else dir = new THREE.Vector3(g.aim.x, 0, g.aim.y).normalize();
+      const thrustOn = g.thrusting && (g.role === 'strike' || (g.role === 'picket' && g.mode !== 'station'));
       for (const sh of H_.aliveShips(g)) {
+        if (si >= 28) break;
         const m = insetShip(iv, si++, color);
         m.position.copy(toL(H_.shipPos(g, sh)));
-        let d = dir;
-        if (!d) {
-          d = new THREE.Vector3(other.pos.x - g.pos.x, 0, other.pos.y - g.pos.y).normalize();
-        }
-        m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), d);
+        const dir = shipHeading(g, sh);
+        m.quaternion.setFromUnitVectors(ZP, new THREE.Vector3(dir.x, 0, dir.y).normalize());
         m.scale.setScalar(shipScale);
         const pl = m.userData.plume;
-        pl.visible = g.role !== 'defense' && g.thrusting;
+        pl.visible = thrustOn;
         if (pl.visible) pl.scale.set(1, 1, 0.7 + Math.random() * 0.6);
       }
     }
     for (; si < iv.ships.length; si++) if (iv.ships[si]) iv.ships[si].visible = false;
 
-    // torpedoes + trails
+    // torpedoes from every battle, spatially culled
     const pa = iv.torps.geometry.attributes.position.array;
     const ca = iv.torps.geometry.attributes.color.array;
     const tpa = iv.torpTrails.geometry.attributes.position.array;
     const tca = iv.torpTrails.geometry.attributes.color.array;
-    const fvx = (bt.a.vel.x + bt.b.vel.x) / 2, fvy = (bt.a.vel.y + bt.b.vel.y) / 2;
-    let ti = 0;
-    for (const t of bt.torps) {
-      if (!t.alive || ti >= 400) continue;
-      const lp = toL(t.pos);
-      pa[ti * 3] = lp.x; pa[ti * 3 + 1] = 0; pa[ti * 3 + 2] = lp.z;
-      const col = new THREE.Color(t.side === 'earth' ? 0xbfe0ff : 0xffc4a8);
-      ca[ti * 3] = col.r; ca[ti * 3 + 1] = col.g; ca[ti * 3 + 2] = col.b;
-      // trail: short streak against the battle frame velocity
-      const rvx = t.vel.x - fvx, rvy = t.vel.y - fvy;
-      const rl = Math.hypot(rvx, rvy) || 1;
-      const trailLen = halfU * 0.05;
-      tpa[ti * 6] = lp.x; tpa[ti * 6 + 1] = 0; tpa[ti * 6 + 2] = lp.z;
-      tpa[ti * 6 + 3] = lp.x - rvx / rl * trailLen;
-      tpa[ti * 6 + 4] = 0;
-      tpa[ti * 6 + 5] = lp.z - rvy / rl * trailLen;
-      tca[ti * 6] = col.r; tca[ti * 6 + 1] = col.g; tca[ti * 6 + 2] = col.b;
-      tca[ti * 6 + 3] = 0; tca[ti * 6 + 4] = 0; tca[ti * 6 + 5] = 0;
-      ti++;
+    const ra = iv.tracers.geometry.attributes.position.array;
+    let ti = 0, rj = 0;
+    const cullR = iv.half * 1.9;
+    for (const bt of view.battles) {
+      if (bt.done) continue;
+      const fvx = (bt.a.vel.x + bt.b.vel.x) / 2, fvy = (bt.a.vel.y + bt.b.vel.y) / 2;
+      for (const t of bt.torps) {
+        if (!t.alive) continue;
+        if (Math.hypot(t.pos.x - cx, t.pos.y - cy) > cullR) continue;
+        if (ti < 400) {
+          const lp = toL(t.pos);
+          pa[ti * 3] = lp.x; pa[ti * 3 + 1] = 0; pa[ti * 3 + 2] = lp.z;
+          const col = new THREE.Color(t.side === 'earth' ? 0xbfe0ff : 0xffc4a8);
+          ca[ti * 3] = col.r; ca[ti * 3 + 1] = col.g; ca[ti * 3 + 2] = col.b;
+          const rvx = t.vel.x - fvx, rvy = t.vel.y - fvy;
+          const rl = Math.hypot(rvx, rvy) || 1;
+          const trailLen = halfU * 0.05;
+          tpa[ti * 6] = lp.x; tpa[ti * 6 + 1] = 0; tpa[ti * 6 + 2] = lp.z;
+          tpa[ti * 6 + 3] = lp.x - rvx / rl * trailLen;
+          tpa[ti * 6 + 4] = 0;
+          tpa[ti * 6 + 5] = lp.z - rvy / rl * trailLen;
+          tca[ti * 6] = col.r; tca[ti * 6 + 1] = col.g; tca[ti * 6 + 2] = col.b;
+          tca[ti * 6 + 3] = 0; tca[ti * 6 + 4] = 0; tca[ti * 6 + 5] = 0;
+          ti++;
+        }
+        if (t.engaged && rj < 240) {
+          const defenders = H_.aliveShips(t.tGroup);
+          if (defenders.length) {
+            const src = defenders[(t.id * 7 + Math.floor(view.wallNow * 9)) % defenders.length];
+            const a = toL(H_.shipPos(t.tGroup, src)), b = toL(t.pos);
+            const j = halfU * 0.01;
+            ra[rj * 6] = a.x; ra[rj * 6 + 1] = 0; ra[rj * 6 + 2] = a.z;
+            ra[rj * 6 + 3] = b.x + (Math.random() - 0.5) * j;
+            ra[rj * 6 + 4] = (Math.random() - 0.5) * j * 0.4;
+            ra[rj * 6 + 5] = b.z + (Math.random() - 0.5) * j;
+            rj++;
+          }
+        }
+      }
     }
     iv.torps.geometry.setDrawRange(0, ti);
     iv.torps.geometry.attributes.position.needsUpdate = true;
@@ -609,23 +639,6 @@ window.GFX = (function () {
     iv.torpTrails.geometry.setDrawRange(0, ti * 2);
     iv.torpTrails.geometry.attributes.position.needsUpdate = true;
     iv.torpTrails.geometry.attributes.color.needsUpdate = true;
-
-    // PDC tracers
-    const ra = iv.tracers.geometry.attributes.position.array;
-    let rj = 0;
-    for (const t of bt.torps) {
-      if (!t.alive || !t.engaged || rj >= 240) continue;
-      const defenders = env.helpers.aliveShips(t.tGroup);
-      if (!defenders.length) continue;
-      const src = defenders[(t.id * 7 + Math.floor(view.wallNow * 9)) % defenders.length];
-      const a = toL(H_.shipPos(t.tGroup, src)), b = toL(t.pos);
-      const j = halfU * 0.01;
-      ra[rj * 6] = a.x; ra[rj * 6 + 1] = 0; ra[rj * 6 + 2] = a.z;
-      ra[rj * 6 + 3] = b.x + (Math.random() - 0.5) * j;
-      ra[rj * 6 + 4] = (Math.random() - 0.5) * j * 0.4;
-      ra[rj * 6 + 5] = b.z + (Math.random() - 0.5) * j;
-      rj++;
-    }
     iv.tracers.geometry.setDrawRange(0, rj * 2);
     iv.tracers.geometry.attributes.position.needsUpdate = true;
     iv.tracers.material.opacity = 0.25 + Math.random() * 0.3;
@@ -640,12 +653,18 @@ window.GFX = (function () {
     c.root.style.top = rect.y + 'px';
     c.root.style.width = rect.s + 'px';
     c.root.style.height = rect.s + 'px';
-    c.title.textContent = bt.title;
-    c.range.textContent = '⌀ ' + env.helpers.fmtKm(bt.half * 2);
-    c.la.textContent = `${env.SIDES[bt.a.side].navy} ${H_.aliveCount(bt.a)}`;
-    c.la.style.color = env.SIDES[bt.a.side].color;
-    c.lb.textContent = `${H_.aliveCount(bt.b)} ${env.SIDES[bt.b.side].navy}`;
-    c.lb.style.color = env.SIDES[bt.b.side].color;
+    c.title.textContent = desc.title;
+    c.range.textContent = '\u2300 ' + env.helpers.fmtKm(iv.half * 2);
+    if (desc.battle) {
+      const bt = desc.battle;
+      c.la.textContent = `${env.SIDES[bt.a.side].navy} ${H_.aliveCount(bt.a)}`;
+      c.la.style.color = env.SIDES[bt.a.side].color;
+      c.lb.textContent = `${H_.aliveCount(bt.b)} ${env.SIDES[bt.b.side].navy}`;
+      c.lb.style.color = env.SIDES[bt.b.side].color;
+    } else {
+      c.la.textContent = '';
+      c.lb.textContent = '';
+    }
 
     // render in scissored viewport (GL origin is bottom-left)
     const vy = H - rect.y - rect.s;
@@ -659,25 +678,89 @@ window.GFX = (function () {
     renderer.setClearColor(0x04060d, 1);
   }
 
-  /* ---------------- input: orbit + zoom ---------------- */
+  /* ---------------- input: orbit, pan, anchored zoom & pinch ---------------- */
+  // Google-Maps-style zoom: the world point under the cursor (or pinch
+  // midpoint) stays fixed on screen while the camera scales toward it.
+  function planePoint(px, py) {
+    const cam = sys.cam;
+    const origin = cam.position.clone();
+    const dir = new THREE.Vector3(px / W * 2 - 1, -(py / H) * 2 + 1, 0.5)
+      .unproject(cam).sub(origin).normalize();
+    if (Math.abs(dir.y) < 1e-6) return null;
+    const t = -origin.y / dir.y;
+    if (t <= 0) return null;
+    return origin.addScaledVector(dir, t);
+  }
+  function clampTarget(cs) {
+    cs.tx = Math.min(Math.max(cs.tx, -600), 600);
+    cs.tz = Math.min(Math.max(cs.tz, -600), 600);
+  }
+  function zoomAt(px, py, k) {
+    const cs = sys.camState;
+    const nd = Math.min(Math.max(cs.dist * k, 28), 2600);
+    k = nd / cs.dist;
+    const P = planePoint(px, py);
+    cs.dist = nd;
+    if (P) {
+      cs.tx = P.x + (cs.tx - P.x) * k;
+      cs.tz = P.z + (cs.tz - P.z) * k;
+      clampTarget(cs);
+    }
+  }
+  function panBetween(ax, ay, bx, by) {
+    const A = planePoint(ax, ay), B = planePoint(bx, by);
+    if (!A || !B) return;
+    const cs = sys.camState;
+    cs.tx += A.x - B.x;
+    cs.tz += A.z - B.z;
+    clampTarget(cs);
+  }
   function bindInput(canvas) {
-    let drag = null;
+    const pts = new Map();          // active pointers
+    let pinch = null;               // {d, mx, my}
+    let last = null;                // single-pointer drag anchor {x, y, pan}
     canvas.addEventListener('pointerdown', e => {
-      drag = { x: e.clientX, y: e.clientY };
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       canvas.setPointerCapture(e.pointerId);
+      if (pts.size === 1) last = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.button === 1 || e.shiftKey };
+      pinch = null;
     });
     canvas.addEventListener('pointermove', e => {
-      if (!drag) return;
-      const cs = sys.camState;
-      cs.azim += (e.clientX - drag.x) * 0.005;
-      cs.elev = Math.min(Math.max(cs.elev + (e.clientY - drag.y) * 0.004, 0.12), 1.45);
-      drag = { x: e.clientX, y: e.clientY };
+      const p = pts.get(e.pointerId);
+      if (!p) return;
+      p.x = e.clientX; p.y = e.clientY;
+      if (pts.size === 2) {
+        const [a, b] = [...pts.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        if (pinch) {
+          zoomAt(mx, my, pinch.d / d);          // spread fingers => zoom in
+          panBetween(pinch.mx, pinch.my, mx, my);
+        }
+        pinch = { d, mx, my };
+        last = null;
+      } else if (pts.size === 1 && last) {
+        if (last.pan) {
+          panBetween(last.x, last.y, e.clientX, e.clientY);
+        } else {
+          const cs = sys.camState;
+          cs.azim += (e.clientX - last.x) * 0.005;
+          cs.elev = Math.min(Math.max(cs.elev + (e.clientY - last.y) * 0.004, 0.12), 1.45);
+        }
+        last = { x: e.clientX, y: e.clientY, pan: last.pan };
+      }
     });
-    canvas.addEventListener('pointerup', () => { drag = null; });
+    const drop = e => {
+      pts.delete(e.pointerId);
+      pinch = null;
+      last = pts.size === 1 ? { ...[...pts.values()][0], pan: false } : null;
+    };
+    canvas.addEventListener('pointerup', drop);
+    canvas.addEventListener('pointercancel', drop);
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
     canvas.addEventListener('wheel', e => {
       e.preventDefault();
-      const cs = sys.camState;
-      cs.dist = Math.min(Math.max(cs.dist * Math.exp(e.deltaY * 0.001), 140), 2400);
+      zoomAt(e.clientX, e.clientY, Math.exp(e.deltaY * 0.0012));
     }, { passive: false });
   }
 
@@ -711,12 +794,16 @@ window.GFX = (function () {
     if (renderer) renderer.setSize(W, H);
   }
 
-  function insetRects(n) {
-    const isz = Math.min(340, W * 0.42, H * 0.46);
-    const iy = Math.max(Math.min((H - isz) / 2 + 30, H - isz - 165), 140);
-    const out = [];
-    for (let i = 0; i < n; i++)
-      out.push({ x: i === 0 ? W - isz - 14 : 14, y: iy, s: isz });
+  // two stacked columns: Earth-side views on the left, Mars-side on the right
+  function insetRects(list) {
+    const cols = [[], []];
+    for (const d of list) cols[d.col === 1 ? 1 : 0].push(d);
+    const rows = Math.max(cols[0].length, cols[1].length, 1);
+    let isz = Math.min(300, W * 0.30, (H - 330) / rows - 12);
+    isz = Math.max(isz, 140);
+    const out = new Map();
+    cols.forEach((arr, c) => arr.forEach((d, r) =>
+      out.set(d.id, { x: c === 0 ? 14 : W - isz - 14, y: 150 + r * (isz + 12), s: isz })));
     return out;
   }
 
@@ -727,14 +814,17 @@ window.GFX = (function () {
     renderer.clear(true, true, false);
     renderSystem(view);
 
-    const list = view.insets.slice(0, 2);
-    const rects = insetRects(list.length);
-    for (let i = 0; i < list.length; i++) {
-      if (!insetViews[i]) insetViews[i] = makeInsetView(i);
-      renderInset(insetViews[i], list[i], rects[i], view);
+    const list = view.insets.slice(0, 5);
+    const rects = insetRects(list);
+    const used = new Set();
+    for (const desc of list) {
+      let iv = insetMap.get(desc.id);
+      if (!iv) { iv = makeInsetView(insetMap.size); insetMap.set(desc.id, iv); }
+      used.add(desc.id);
+      renderInset(iv, desc, rects.get(desc.id), view);
     }
-    for (let i = list.length; i < insetViews.length; i++)
-      insetViews[i].chrome.root.style.display = 'none';
+    for (const [id, iv] of insetMap)
+      if (!used.has(id)) iv.chrome.root.style.display = 'none';
     labelsEnd();
   }
 
