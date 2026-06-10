@@ -370,13 +370,28 @@ window.GFX = (function () {
           n > 0 ? env.SIDES[p.sideKey].color : '#5a6a85', 9);
     }
 
-    // strike fleets + trails
+    // strike fleets + trails (markers keep constant screen size and stay
+    // clear of the visually exaggerated planet spheres)
+    const mScale = Math.min(Math.max(cs.dist * 0.0028, 0.5), 4.5);
     for (const g of view.attackGroups) {
       const alive = env.helpers.aliveCount(g) > 0;
       const f = sysFleet(g);
       f.visible = alive;
       if (alive) {
         f.position.set(g.pos.x / SYS, 0, g.pos.y / SYS);
+        f.scale.setScalar(mScale);
+        for (const p of env.planets) {
+          const px = p.pos.x / SYS, pz = p.pos.y / SYS;
+          const dx = f.position.x - px, dz = f.position.z - pz;
+          const dd = Math.hypot(dx, dz);
+          const minR = (p.sysR || 2) + mScale * 1.7;
+          if (dd < minR) {
+            const ux = dd > 1e-6 ? dx / dd : 1, uz = dd > 1e-6 ? dz / dd : 0;
+            f.position.x = px + ux * minR;
+            f.position.z = pz + uz * minR;
+            break;
+          }
+        }
         const d = new THREE.Vector3(g.aim.x, 0, g.aim.y).normalize();
         f.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), d);
         const pl = f.userData.plume;
@@ -405,13 +420,14 @@ window.GFX = (function () {
     }
 
     // battle reticles
+    const rScale = Math.min(Math.max(cs.dist / 760, 0.2), 2);
     let ri = 0;
     for (const bt of view.battles) {
       if (bt.done || ri >= S.reticles.length) continue;
       const r = S.reticles[ri++];
       r.visible = true;
       r.position.set((bt.a.pos.x + bt.b.pos.x) / 2 / SYS, 0, (bt.a.pos.y + bt.b.pos.y) / 2 / SYS);
-      r.scale.setScalar(9 + 2.4 * Math.sin(view.wallNow * 5));
+      r.scale.setScalar((9 + 2.4 * Math.sin(view.wallNow * 5)) * rScale);
       r.material.opacity = 0.4 + 0.2 * Math.sin(view.wallNow * 5);
     }
     for (; ri < S.reticles.length; ri++) S.reticles[ri].visible = false;
@@ -793,16 +809,25 @@ window.GFX = (function () {
     if (renderer) renderer.setSize(W, H);
   }
 
-  // two stacked columns: Earth-side views on the left, Mars-side on the right
+  // two stacked columns under the HUD panels: Earth-side views on the
+  // left, Mars-side on the right; drop low-priority views that don't fit
   function insetRects(list) {
     const cols = [[], []];
     for (const d of list) cols[d.col === 1 ? 1 : 0].push(d);
+    const topFor = id => {
+      const el = document.getElementById(id);
+      return Math.max(150, ((el && el.offsetHeight) || 120) + 26);
+    };
+    const tops = [topFor('panelL'), topFor('panelR')];
+    const avail = H - Math.max(tops[0], tops[1]) - 170;   // keep clear of the log
+    const maxRows = Math.max(1, Math.floor(avail / 158));
+    cols[0] = cols[0].slice(0, maxRows);
+    cols[1] = cols[1].slice(0, maxRows);
     const rows = Math.max(cols[0].length, cols[1].length, 1);
-    let isz = Math.min(300, W * 0.30, (H - 330) / rows - 12);
-    isz = Math.max(isz, 140);
+    const isz = Math.min(300, W * 0.30, Math.max(avail / rows - 12, 146));
     const out = new Map();
     cols.forEach((arr, c) => arr.forEach((d, r) =>
-      out.set(d.id, { x: c === 0 ? 14 : W - isz - 14, y: 150 + r * (isz + 12), s: isz })));
+      out.set(d.id, { x: c === 0 ? 14 : W - isz - 14, y: tops[c] + r * (isz + 12), s: isz })));
     return out;
   }
 
@@ -817,10 +842,12 @@ window.GFX = (function () {
     const rects = insetRects(list);
     const used = new Set();
     for (const desc of list) {
+      const rect = rects.get(desc.id);
+      if (!rect) continue;                  // didn't fit on screen this frame
       let iv = insetMap.get(desc.id);
       if (!iv) { iv = makeInsetView(insetMap.size); insetMap.set(desc.id, iv); }
       used.add(desc.id);
-      renderInset(iv, desc, rects.get(desc.id), view);
+      renderInset(iv, desc, rect, view);
     }
     for (const [id, iv] of insetMap)
       if (!used.has(id)) iv.chrome.root.style.display = 'none';

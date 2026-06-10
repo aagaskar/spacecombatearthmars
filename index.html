@@ -24,8 +24,10 @@
     border-radius:8px;box-shadow:0 0 30px rgba(20,50,110,.35) inset}
   .ichrome .it{position:absolute;top:0;left:0;right:0;height:18px;border-radius:8px 8px 0 0;
     background:rgba(8,14,30,.92);color:#ffd27f;font-size:10px;letter-spacing:1px;
-    text-align:center;line-height:18px}
-  .ichrome .iw{position:absolute;top:0;right:7px;font-size:9px;color:#7d96bf;line-height:18px}
+    text-align:center;line-height:18px;padding:0 10px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ichrome .iw{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);
+    font-size:9px;color:#7d96bf;text-shadow:0 1px 3px #000}
   .ichrome .ila{position:absolute;left:9px;bottom:5px;font-size:10px;text-shadow:0 1px 3px #000}
   .ichrome .ilb{position:absolute;right:9px;bottom:5px;font-size:10px;text-shadow:0 1px 3px #000}
 
@@ -37,9 +39,9 @@
   .panel{position:absolute;top:12px;min-width:230px;padding:8px 12px;font-size:12px;line-height:1.55;
     background:rgba(6,12,26,.72);border:1px solid rgba(90,130,190,.25);border-radius:6px;
     white-space:pre;backdrop-filter:blur(2px);pointer-events:auto}
-  .roster{white-space:normal;display:grid;grid-template-columns:1fr 1fr;gap:0 10px;
+  .roster{white-space:normal;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 7px;
     margin-top:6px;padding-top:5px;border-top:1px solid rgba(90,130,190,.2)}
-  .rost{font-size:10.5px;line-height:1.6;cursor:pointer;border-radius:3px;padding:0 3px;
+  .rost{font-size:10px;line-height:1.6;cursor:pointer;border-radius:3px;padding:0 2px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .rost:hover{background:rgba(120,170,240,.14)}
   .rost.dead{color:#54627e;text-decoration:line-through;cursor:default}

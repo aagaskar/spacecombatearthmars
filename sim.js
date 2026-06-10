@@ -951,8 +951,9 @@ function desiredTimeScale() {
   }
   const next = upcomingEventDt();
   if (!isFinite(next)) return 400;
-  // paced so a typical interplanetary transit takes about a minute of wall time
-  return clamp(next / 5, 50, 80000);
+  // paced so a typical interplanetary transit takes about a minute of wall
+  // time — the warp ceiling keeps the accel/cruise leg from flashing past
+  return clamp(next / 6, 50, 6000);
 }
 
 /* ===================================================================
@@ -1062,8 +1063,8 @@ function insetDescriptors() {
     }
     if (found) {
       const p = shipPos(fg, found);
-      // splice in right after the planet views so it never falls off the cap
-      list.splice(2, 0, {
+      // the player asked for this view — it takes the top slot in its column
+      list.unshift({
         id: 'ship', title: `${SIDES[fg.side].navy} ${found.name.toUpperCase()}`,
         cx: p.x, cy: p.y, half: 8e6, zoomShips: 2.4,
         col: selectedShip.side === 'earth' ? 0 : 1, battle: null
