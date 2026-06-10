@@ -769,315 +769,32 @@ function desiredTimeScale() {
 }
 
 /* ===================================================================
-   RENDERING
+   RENDERING — delegated to the WebGL renderer in gfx3d.js
    =================================================================== */
 const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-let W = 0, H = 0, DPR = 1, stars = [];
+let W = window.innerWidth, H = window.innerHeight;
+const gfxReady = (typeof GFX !== 'undefined' && GFX)
+  ? GFX.init(canvas, {
+      SIDES,
+      planets: [earth, mars],
+      bodies: COLLIDERS,
+      helpers: { aliveCount, aliveShips, shipPos, shipVel, fmtKm }
+    })
+  : false;
+
+if (!gfxReady && typeof window !== 'undefined' && window.document && document.body)
+  log('WebGL unavailable — graphics disabled, simulation still runs', 'sys');
 
 function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth; H = window.innerHeight;
-  canvas.width = W * DPR; canvas.height = H * DPR;
-  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);   // draw in CSS pixels
-  stars = [];
-  for (let i = 0; i < 350; i++)
-    stars.push({ x: Math.random() * W, y: Math.random() * H, r: rand(0.3, 1.3), tw: rand(0.5, 3), ph: rand(0, TAU) });
+  if (gfxReady) GFX.resize(W, H);
 }
 window.addEventListener('resize', resize);
 resize();
 
-function worldScale() { return Math.min(W, H) / (3.55 * AU); }
-function w2s(p) { const s = worldScale(); return V(W / 2 + p.x * s, H / 2 + p.y * s); }
-
-function drawShipTri(x, y, ang, size, color) {
-  ctx.save();
-  ctx.translate(x, y); ctx.rotate(ang);
-  ctx.beginPath();
-  ctx.moveTo(size, 0);
-  ctx.lineTo(-size * 0.7, size * 0.55);
-  ctx.lineTo(-size * 0.4, 0);
-  ctx.lineTo(-size * 0.7, -size * 0.55);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawWorld() {
-  ctx.fillStyle = '#04060d';
-  ctx.fillRect(0, 0, W, H);
-
-  // stars
-  for (const st of stars) {
-    ctx.globalAlpha = 0.25 + 0.3 * (0.5 + 0.5 * Math.sin(wallNow * st.tw + st.ph));
-    ctx.fillStyle = '#cfe0ff';
-    ctx.fillRect(st.x, st.y, st.r, st.r);
-  }
-  ctx.globalAlpha = 1;
-
-  const s = worldScale();
-
-  // orbits (true ellipses; the Sun sits at one focus)
-  ctx.strokeStyle = 'rgba(160,190,255,0.09)';
-  ctx.lineWidth = 1;
-  for (const p of [earth, mars]) {
-    const ecx = W / 2 - p.a * p.ecc * Math.cos(p.varpi) * s;
-    const ecy = H / 2 - p.a * p.ecc * Math.sin(p.varpi) * s;
-    ctx.beginPath();
-    ctx.ellipse(ecx, ecy, p.a * s, p.b * s, p.varpi, 0, TAU);
-    ctx.stroke();
-  }
-
-  // sun
-  const sg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, 26);
-  sg.addColorStop(0, 'rgba(255,240,200,1)');
-  sg.addColorStop(0.3, 'rgba(255,200,110,0.7)');
-  sg.addColorStop(1, 'rgba(255,170,60,0)');
-  ctx.fillStyle = sg;
-  ctx.beginPath(); ctx.arc(W / 2, H / 2, 26, 0, TAU); ctx.fill();
-
-  // trails
-  if (GR) for (const g of attackGroups) {
-    if (g.trail.length < 2) continue;
-    ctx.strokeStyle = SIDES[g.side].color;
-    ctx.globalAlpha = 0.35;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    const p0 = w2s(g.trail[0]);
-    ctx.moveTo(p0.x, p0.y);
-    for (let i = 1; i < g.trail.length; i++) { const p = w2s(g.trail[i]); ctx.lineTo(p.x, p.y); }
-    const pe = w2s(g.pos); ctx.lineTo(pe.x, pe.y);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-
-  // planets
-  for (const p of [earth, mars]) {
-    const sp = w2s(p.pos);
-    const gl = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, p.drawR * 3.2);
-    gl.addColorStop(0, p.color);
-    gl.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.globalAlpha = 0.5; ctx.fillStyle = gl;
-    ctx.beginPath(); ctx.arc(sp.x, sp.y, p.drawR * 3.2, 0, TAU); ctx.fill();
-    ctx.globalAlpha = 1; ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(sp.x, sp.y, p.drawR, 0, TAU); ctx.fill();
-    ctx.fillStyle = 'rgba(200,220,255,0.65)';
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(p.name.toUpperCase(), sp.x, sp.y - p.drawR - 7);
-  }
-
-  if (!GR) return;
-
-  // defense fleets (markers near planets)
-  for (const key of ['earth', 'mars']) {
-    const g = GR[key].home;
-    if (g.count0 === 0) continue;
-    const n = aliveCount(g);
-    const sp = w2s(g.pos);
-    if (n > 0) {
-      ctx.strokeStyle = SIDES[key].color;
-      ctx.globalAlpha = 0.8; ctx.lineWidth = 1;
-      ctx.strokeRect(sp.x - 4, sp.y + 9, 8, 8);
-      ctx.globalAlpha = 1;
-    }
-    ctx.fillStyle = n > 0 ? SIDES[key].color : '#5a6a85';
-    ctx.font = '9px monospace'; ctx.textAlign = 'center';
-    ctx.fillText(n > 0 ? `HOME ${n}` : 'HOME ✕', sp.x, sp.y + 28);
-  }
-
-  // strike fleets
-  for (const g of attackGroups) {
-    if (aliveCount(g) === 0) continue;
-    const sp = w2s(g.pos);
-    const ang = Math.atan2(g.aim.y, g.aim.x);
-    if (g.thrusting) {
-      const L = 10 + Math.random() * 7;
-      ctx.strokeStyle = 'rgba(170,220,255,0.9)';
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.moveTo(sp.x - Math.cos(ang) * 6, sp.y - Math.sin(ang) * 6);
-      ctx.lineTo(sp.x - Math.cos(ang) * (6 + L), sp.y - Math.sin(ang) * (6 + L));
-      ctx.stroke();
-    }
-    drawShipTri(sp.x, sp.y, ang, 7, SIDES[g.side].color);
-    ctx.fillStyle = SIDES[g.side].color;
-    ctx.font = '9px monospace'; ctx.textAlign = 'center';
-    ctx.fillText(`${SIDES[g.side].navy} ${aliveCount(g)}`, sp.x, sp.y - 12);
-  }
-
-  // battle reticles
-  for (const bt of battles) {
-    if (bt.done) continue;
-    const c = w2s(mul(add(bt.a.pos, bt.b.pos), 0.5));
-    const r = 16 + 5 * Math.sin(wallNow * 5);
-    ctx.strokeStyle = 'rgba(255,210,127,0.7)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, TAU); ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  // world-view explosions
-  for (const ex of explosions) {
-    const age = wallNow - ex.wall0;
-    if (age > 1.2) continue;
-    const sp = w2s(ex.pos);
-    ctx.globalAlpha = 1 - age / 1.2;
-    ctx.strokeStyle = '#ffd9a0';
-    ctx.beginPath(); ctx.arc(sp.x, sp.y, 2 + age * (ex.big ? 14 : 7), 0, TAU); ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-}
-
 /* ---------------- battle insets ---------------- */
 function activeInsets() {
   return battles.filter(bt => !bt.done || wallNow - bt.doneWall < 2.5).slice(-2);
-}
-
-function drawInset(bt, ix, iy, isz, dtWall) {
-  const cw = mul(add(bt.a.pos, bt.b.pos), 0.5);
-  const sep = dist(bt.a.pos, bt.b.pos);
-  const targetHalf = Math.max(sep * 0.62, 3.2e7);
-  bt.half = bt.half == null ? targetHalf : lerp(bt.half, targetHalf, 1 - Math.exp(-1.8 * dtWall));
-  const half = bt.half;
-  const si = (isz / 2 - 14) / half;
-  const cx = ix + isz / 2, cy = iy + isz / 2;
-  const toI = p => V(cx + (p.x - cw.x) * si, cy + (p.y - cw.y) * si);
-
-  // connector to world position
-  const wc = w2s(cw);
-  ctx.strokeStyle = 'rgba(255,210,127,0.22)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(wc.x, wc.y); ctx.lineTo(cx, iy); ctx.stroke();
-
-  // frame
-  ctx.save();
-  ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(ix, iy, isz, isz, 8); else ctx.rect(ix, iy, isz, isz);
-  ctx.fillStyle = 'rgba(4,8,18,0.93)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(120,160,230,0.45)';
-  ctx.stroke();
-  ctx.clip();
-
-  // range rings
-  const ringStep = Math.pow(10, Math.floor(Math.log10(half)));
-  ctx.strokeStyle = 'rgba(120,160,230,0.12)';
-  ctx.font = '8px monospace'; ctx.textAlign = 'left';
-  for (let r = ringStep; r < half * 1.4; r += ringStep) {
-    ctx.beginPath(); ctx.arc(cx, cy, r * si, 0, TAU); ctx.stroke();
-    if (r * si > 30) {
-      ctx.fillStyle = 'rgba(120,160,230,0.3)';
-      ctx.fillText(fmtKm(r), cx + r * si * 0.707 + 2, cy - r * si * 0.707);
-    }
-  }
-
-  // planets & moons in view (real radii, with moon orbit guides)
-  for (const body of COLLIDERS) {
-    if (dist(body.pos, cw) > half * 1.9) continue;
-    if (body.parent) {
-      const par = toI(body.parent.pos);
-      ctx.strokeStyle = 'rgba(160,190,255,0.10)';
-      ctx.beginPath(); ctx.arc(par.x, par.y, body.a * si, 0, TAU); ctx.stroke();
-    }
-    const pp = toI(body.pos);
-    const pr = Math.max(body.realR * si, 1.6);
-    const gl = ctx.createRadialGradient(pp.x, pp.y, pr * 0.5, pp.x, pp.y, pr * 1.25);
-    gl.addColorStop(0, body.color);
-    gl.addColorStop(0.8, body.color);
-    gl.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = gl;
-    ctx.beginPath(); ctx.arc(pp.x, pp.y, pr * 1.25, 0, TAU); ctx.fill();
-    if (body.parent) {
-      ctx.fillStyle = 'rgba(170,190,220,0.55)';
-      ctx.font = '8px monospace'; ctx.textAlign = 'center';
-      ctx.fillText(body.name.toUpperCase(), pp.x, pp.y - pr - 4);
-    }
-  }
-
-  const frameVel = mul(add(bt.a.vel, bt.b.vel), 0.5);
-
-  // PDC tracers
-  for (const t of bt.torps) {
-    if (!t.alive || !t.engaged) continue;
-    const defenders = aliveShips(t.tGroup);
-    if (!defenders.length) continue;
-    const src = defenders[(t.id * 7 + Math.floor(wallNow * 9)) % defenders.length];
-    const a = toI(shipPos(t.tGroup, src)), b = toI(t.pos);
-    ctx.strokeStyle = 'rgba(255,224,138,' + rand(0.15, 0.5).toFixed(2) + ')';
-    ctx.lineWidth = 0.8;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x + rand(-3, 3), b.y + rand(-3, 3));
-    ctx.stroke();
-  }
-
-  // torpedoes
-  for (const t of bt.torps) {
-    if (!t.alive) continue;
-    const p = toI(t.pos);
-    const rv = sub(t.vel, frameVel);
-    const p2 = toI(add(t.pos, mul(norm(rv), -10 / si)));
-    ctx.strokeStyle = t.side === 'earth' ? 'rgba(140,200,255,0.7)' : 'rgba(255,170,130,0.7)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(p2.x, p2.y); ctx.lineTo(p.x, p.y); ctx.stroke();
-    ctx.fillStyle = t.side === 'earth' ? '#bfe0ff' : '#ffc4a8';
-    ctx.fillRect(p.x - 1, p.y - 1, 2.2, 2.2);
-  }
-
-  // ships
-  for (const g of [bt.a, bt.b]) {
-    const other = g === bt.a ? bt.b : bt.a;
-    for (const sh of aliveShips(g)) {
-      const p = toI(shipPos(g, sh));
-      let ang;
-      if (g.role === 'defense') {
-        const d = sub(other.pos, g.pos);
-        ang = Math.atan2(d.y, d.x);
-      } else ang = Math.atan2(g.aim.y, g.aim.x);
-      drawShipTri(p.x, p.y, ang, 4.5, SIDES[g.side].color);
-      if (g.role !== 'defense' && g.thrusting) {
-        ctx.strokeStyle = 'rgba(170,220,255,0.7)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(p.x - Math.cos(ang) * 4, p.y - Math.sin(ang) * 4);
-        ctx.lineTo(p.x - Math.cos(ang) * (8 + Math.random() * 5), p.y - Math.sin(ang) * (8 + Math.random() * 5));
-        ctx.stroke();
-      }
-    }
-  }
-
-  // explosions inside inset
-  for (const ex of explosions) {
-    const age = wallNow - ex.wall0;
-    if (age > 1.0) continue;
-    if (dist(ex.pos, cw) > half * 1.5) continue;
-    const p = toI(ex.pos);
-    const r = 2 + age * (ex.big ? 22 : 9);
-    ctx.globalAlpha = (1 - age) * 0.9;
-    ctx.fillStyle = '#fff1d0';
-    ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(3 - age * 3, 0.5), 0, TAU); ctx.fill();
-    ctx.strokeStyle = '#ffb85a';
-    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-
-  // header & counts
-  ctx.fillStyle = 'rgba(8,14,30,0.9)';
-  ctx.fillRect(ix, iy, isz, 18);
-  ctx.fillStyle = '#ffd27f';
-  ctx.font = '10px monospace'; ctx.textAlign = 'center';
-  ctx.fillText(bt.title, cx, iy + 12);
-  ctx.textAlign = 'left';
-  ctx.fillStyle = SIDES[bt.a.side].color;
-  ctx.fillText(`${SIDES[bt.a.side].navy} ${aliveCount(bt.a)}`, ix + 8, iy + isz - 8);
-  ctx.textAlign = 'right';
-  ctx.fillStyle = SIDES[bt.b.side].color;
-  ctx.fillText(`${aliveCount(bt.b)} ${SIDES[bt.b.side].navy}`, ix + isz - 8, iy + isz - 8);
-  ctx.restore();
 }
 
 /* ---------------- HUD ---------------- */
@@ -1189,17 +906,18 @@ function frame(now) {
 
   if (explosions.length > 200) explosions = explosions.filter(e => wallNow - e.wall0 < 1.5);
 
-  drawWorld();
+  if (gfxReady) {
+    GFX.render({
+      wallNow, simTime, dtWall, running,
+      groups: GR ? allGroups : [],
+      attackGroups: GR ? attackGroups : [],
+      battles,
+      insets: running ? activeInsets() : [],
+      explosions
+    });
+  }
 
   if (running) {
-    const ins = activeInsets();
-    const isz = Math.min(340, W * 0.42, H * 0.46);
-    // side-centered, clear of the top panels and the bottom-left event log
-    const iy = Math.max(Math.min((H - isz) / 2 + 30, H - isz - 165), 140);
-    ins.forEach((bt, i) => {
-      const ix = i === 0 ? W - isz - 14 : 14;
-      drawInset(bt, ix, iy, isz, dtWall);
-    });
     updateHUD(dtWall);
     if (gameOver && !endShown && wallNow - gameEndWall > 3.2) {
       endShown = true;

@@ -50,18 +50,26 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 
 ## Presentation
 
-- A mission clock shows elapsed time (`T+ 2d 21:05:38`).
-- Time **automatically warps** — up to ~×100,000 during the dull cruise,
-  easing down to ×3 for terminal torpedo defence — so a three-day war plays
-  out in about two minutes. (`SPACE` pauses, `+`/`−` overrides the warp,
-  `A` returns to automatic.)
-- Active engagements get **zoomed inset windows** showing individual ships,
-  torpedo tracks, PDC tracers, and any planets or moons in frame (with moon
-  orbit guides and range rings).
-- The main view shows the Sun, both planetary orbit ellipses (planets move
-  during the transit), drive plumes, and the curved trajectory trails of
-  each strike group — including the dogleg of a Luna gravity-assist
-  approach.
+Rendering is **real-time 3D on the GPU** (WebGL via a vendored three.js —
+no CDN, no build step; software fallback message if WebGL is unavailable).
+
+- The main view is an oblique perspective of the solar system: Sun glow and
+  point-light, true orbit ellipses, textured planets with day/night
+  terminators, fleet meshes with flickering drive plumes, and additive
+  trajectory trails — including the dogleg of a Luna gravity-assist
+  approach. **Drag to orbit the camera, scroll to zoom.**
+- Active engagements get **3D inset viewports** with their own scenes and
+  slowly drifting cinematic cameras: planets and moons at real scale (lit
+  by the actual sun direction, with atmosphere rim glow), individual ship
+  hulls, torpedo swarms with motion streaks, jittering PDC tracer fire,
+  explosion blooms, and a polar tactical grid for depth.
+- A mission clock shows elapsed time (`T+ 2d 21:05:38`), and time
+  **automatically warps** — up to ~×100,000 during the dull cruise, easing
+  down to ×3 for terminal torpedo defence — so a three-day war plays out in
+  about two minutes. (`SPACE` pauses, `+`/`−` overrides the warp, `A`
+  returns to automatic.)
+- Fleet status panels, a timestamped event log, planet/moon/fleet labels
+  and inset chrome are crisp DOM overlays on top of the GL canvas.
 
 ## Physics & combat model
 
@@ -86,6 +94,9 @@ orbitals thinner.
 
 ## Files
 
-- `index.html` — markup, styles, setup/end-screen UI
-- `sim.js` — everything else: physics, AI guidance, combat, time-warp
-  director, rendering, HUD
+- `index.html` — markup, styles, setup/end-screen UI, HUD and overlay layers
+- `sim.js` — simulation: physics, AI guidance, combat, time-warp director, HUD
+- `gfx3d.js` — the WebGL renderer: system view, battle inset viewports,
+  procedural planet textures, ship meshes, labels and inset chrome
+- `vendor/three.min.js` — three.js r128, vendored so the game runs offline
+  from a plain `file://` open
