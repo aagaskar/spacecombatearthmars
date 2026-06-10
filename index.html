@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1G — The Earth–Mars War</title>
+<style>
+  :root{
+    --earth:#52a7ff;
+    --mars:#ff6a45;
+    --amber:#ffd27f;
+    --bg:#04060d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
+    font-family:"Cascadia Mono","JetBrains Mono",Consolas,Menlo,monospace;color:#cfe3ff}
+  canvas#c{position:absolute;inset:0;display:block}
+
+  /* ---------- HUD ---------- */
+  #hud{position:absolute;inset:0;pointer-events:none}
+  #topbar{position:absolute;top:10px;left:50%;transform:translateX(-50%);text-align:center}
+  #clock{font-size:26px;letter-spacing:2px;color:#eaf3ff;text-shadow:0 0 12px rgba(120,180,255,.5)}
+  #tscale{margin-top:2px;font-size:12px;color:#7d96bf;letter-spacing:1px}
+  .panel{position:absolute;top:12px;min-width:230px;padding:8px 12px;font-size:12px;line-height:1.55;
+    background:rgba(6,12,26,.72);border:1px solid rgba(90,130,190,.25);border-radius:6px;
+    white-space:pre;backdrop-filter:blur(2px)}
+  #panelL{left:12px;border-left:3px solid var(--earth)}
+  #panelR{right:12px;border-left:3px solid var(--mars)}
+  .panel .hdr{font-size:13px;letter-spacing:2px;margin-bottom:3px}
+  #panelL .hdr{color:var(--earth)} #panelR .hdr{color:var(--mars)}
+  .dim{color:#6e82a8}
+
+  #log{position:absolute;left:12px;bottom:12px;width:430px;max-width:46vw;font-size:11.5px;line-height:1.5;
+    text-shadow:0 1px 3px #000}
+  #log .lg{opacity:.92}
+  #log .lg .ts{color:#5d7398;margin-right:6px}
+  #log .e{color:#9cc8ff} #log .m{color:#ffa68c} #log .sys{color:#ffe2a8} #log .n{color:#aebcd6}
+  #help{position:absolute;right:12px;bottom:10px;font-size:11px;color:#5d7398;letter-spacing:.5px}
+
+  /* ---------- overlay / menus ---------- */
+  #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at 50% 40%, rgba(10,18,40,.88), rgba(2,4,10,.96));z-index:10}
+  .screen{display:none;text-align:center;max-width:680px;padding:34px 44px;
+    border:1px solid rgba(110,150,210,.25);border-radius:10px;background:rgba(5,10,22,.85);
+    box-shadow:0 0 60px rgba(40,90,180,.18)}
+  .screen.active{display:block}
+  h1{font-size:34px;letter-spacing:6px;color:#eaf3ff;font-weight:600}
+  h2{font-size:20px;letter-spacing:3px;margin-bottom:10px}
+  .sub{color:#8ba2c8;font-size:13px;line-height:1.7;margin:14px 0 6px}
+  .earthC{color:var(--earth)} .marsC{color:var(--mars)} .amberC{color:var(--amber)}
+  button{pointer-events:auto;margin-top:22px;padding:11px 34px;font:inherit;font-size:14px;letter-spacing:3px;
+    color:#dff;background:rgba(40,80,150,.25);border:1px solid rgba(120,170,240,.6);border-radius:4px;cursor:pointer}
+  button:hover{background:rgba(70,120,200,.4)}
+  input[type=range]{width:380px;max-width:80vw;margin:18px 0 8px;accent-color:#7fb4ff;pointer-events:auto}
+  #allocReadout{font-size:15px;line-height:2;letter-spacing:1px}
+  .ships{font-size:17px;letter-spacing:3px}
+  #endStats{margin-top:14px;font-size:13px;line-height:1.9;color:#aebcd6;white-space:pre}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud" hidden>
+  <div id="topbar">
+    <div id="clock">T+ 0d 00:00:00</div>
+    <div id="tscale">TIME ×1 · AUTO</div>
+  </div>
+  <div id="panelL" class="panel"></div>
+  <div id="panelR" class="panel"></div>
+  <div id="log"></div>
+  <div id="help">SPACE pause &nbsp;·&nbsp; + / − time warp &nbsp;·&nbsp; A resume auto-warp</div>
+</div>
+
+<div id="overlay">
+  <div class="screen active" id="s-title">
+    <h1>1G</h1>
+    <div class="sub" style="letter-spacing:3px">THE EARTH – MARS WAR</div>
+    <div class="sub">Two fleets. Two homeworlds. Epstein drives burning at a constant
+      1&nbsp;g across one astronomical unit of vacuum.<br><br>
+      Each commander secretly splits 12 warships between the <span class="amberC">strike force</span>
+      (flip-and-burn to the enemy world) and the <span class="amberC">home fleet</span>
+      (holds orbit and defends). Torpedoes and point-defence cannons do the rest.</div>
+    <button id="btnBegin">BEGIN</button>
+  </div>
+
+  <div class="screen" id="s-alloc">
+    <h2 id="allocTitle"></h2>
+    <div class="sub" id="allocSub"></div>
+    <input type="range" id="allocSlider" min="0" max="12" step="1" value="8">
+    <div id="allocReadout"></div>
+    <button id="btnCommit">COMMIT ORDERS</button>
+  </div>
+
+  <div class="screen" id="s-handoff">
+    <h2 class="amberC">ORDERS LOCKED</h2>
+    <div class="sub">The Earth commander has walked away from the console.<br><br>
+      Hand control to the <span class="marsC">Mars commander</span>.</div>
+    <button id="btnHandoff">I AM THE MARS COMMANDER</button>
+  </div>
+
+  <div class="screen" id="s-end">
+    <h2 id="endTitle"></h2>
+    <div class="sub" id="endSub"></div>
+    <div id="endStats"></div>
+    <button id="btnAgain">PLAY AGAIN</button>
+  </div>
+</div>
+
+<script src="sim.js"></script>
+</body>
+</html>
