@@ -780,6 +780,7 @@ function resize() {
   W = window.innerWidth; H = window.innerHeight;
   canvas.width = W * DPR; canvas.height = H * DPR;
   canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);   // draw in CSS pixels
   stars = [];
   for (let i = 0; i < 350; i++)
     stars.push({ x: Math.random() * W, y: Math.random() * H, r: rand(0.3, 1.3), tw: rand(0.5, 3), ph: rand(0, TAU) });
@@ -1193,9 +1194,11 @@ function frame(now) {
   if (running) {
     const ins = activeInsets();
     const isz = Math.min(340, W * 0.42, H * 0.46);
+    // side-centered, clear of the top panels and the bottom-left event log
+    const iy = Math.max(Math.min((H - isz) / 2 + 30, H - isz - 165), 140);
     ins.forEach((bt, i) => {
-      const ix = i === 0 ? 14 : W - isz - 14;
-      drawInset(bt, ix, H - isz - 40, isz, dtWall);
+      const ix = i === 0 ? W - isz - 14 : 14;
+      drawInset(bt, ix, iy, isz, dtWall);
     });
     updateHUD(dtWall);
     if (gameOver && !endShown && wallNow - gameEndWall > 3.2) {
