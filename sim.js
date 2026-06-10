@@ -11,7 +11,12 @@ const AU = 1.496e11;            // m
 const G0 = 9.81;                // ship acceleration, m/s^2
 const GM_SUN = 1.32712440018e20;
 
-const N_SHIPS    = 12;          // ships per side
+const N_SHIPS    = 12;          // starting fleet per side
+const FLEET_CAP  = 16;          // shipyard ceiling
+const PROD_BASE  = 2;           // new hulls per round (zero while blockaded)
+const ROUND_GAP  = 60 * 86400;  // refit time between rounds — planets keep moving
+const MAX_ROUNDS = 5;
+const SUPREMACY  = 2;           // attacker:defender ratio that forces a capitulation
 const TORP_ACC   = 490;         // torpedo drive, ~50 g
 const TORP_AMMO  = 8;           // torpedoes per ship
 const SALVO_SIZE = 2;           // torpedoes per ship per salvo
@@ -21,7 +26,7 @@ const STANDOFF   = 2.2e7;       // strike group parks 22,000 km from planet
 const PDC_WINDOW = 14;          // s-to-impact at which PDCs engage
 const PDC_KPS    = 0.15;        // kill prob / s for a fully engaged torpedo
 const PDC_PER_SHIP = 2;         // torpedoes a ship can fully engage at once
-const PDC_PLANET_BONUS = 4;     // extra engagement capacity for home fleets
+const PDC_PLANET_BONUS = 2;     // extra engagement capacity for home fleets
 
 /* ---------------- tiny vector lib ---------------- */
 const V    = (x = 0, y = 0) => ({ x, y });
@@ -87,13 +92,24 @@ function makeMoon(name, color, parent, a, mu, drawR, realR, colR, ang0) {
 
 const earth = makePlanet('Earth', '#3d7dff', AU,            0.0167, 103 * RAD, 1.0526, 6, 6.371e6, 3.986004418e14);
 const mars  = makePlanet('Mars',  '#ff5a36', 1.523679 * AU, 0.0934, 336 * RAD, 2.4639, 5, 3.39e6,  4.2828e13);
+// belt objectives — real orbital elements (2D projection), tiny but honest masses
+const ceres  = makePlanet('Ceres',  '#b8a98c', 2.766 * AU, 0.0785, 153 * RAD, -0.19, 3, 4.7e5,  6.26e10);
+const pallas = makePlanet('Pallas', '#8fa3a8', 2.773 * AU, 0.2300, 310 * RAD, -1.49, 3, 2.56e5, 1.3e10);
+earth.sideKey = 'earth'; mars.sideKey = 'mars';
+earth.sysR = 2.7; mars.sysR = 2.3; ceres.sysR = 1.1; pallas.sysR = 1.0;
+earth.rotPeriod = 86164; mars.rotPeriod = 88775; ceres.rotPeriod = 32700; pallas.rotPeriod = 28100;
+const STATIONS = [
+  { key: 'ceres', body: ceres },
+  { key: 'pallas', body: pallas }
+];
 const luna   = makeMoon('Luna',   '#9aa3b8', earth, 3.844e8,  4.9048e12, 2.5, 1.7374e6, 1.85e6, 0.9);
 const phobos = makeMoon('Phobos', '#8a7d72', mars,  9.376e6,  0,         1.5, 1.1e4,    2.5e4,  2.1);
 const deimos = makeMoon('Deimos', '#8a7d72', mars,  2.3463e7, 0,         1.5, 6.2e3,    2e4,    4.4);
 
 // bodies that pull on ships & torpedoes / that torpedoes can crash into
 const GRAV_BODIES = [earth, mars, luna];
-const COLLIDERS = [earth, mars, luna, phobos, deimos];
+const COLLIDERS = [earth, mars, luna, phobos, deimos, ceres, pallas];
+ceres.colR = 6e5; pallas.colR = 3.5e5;
 
 function gravAt(p) {
   let r2 = p.x * p.x + p.y * p.y, r = Math.sqrt(r2);
@@ -125,13 +141,17 @@ const SIDES = {
     key: 'earth', navy: 'PFE', fullName: "People's Fleet of Earth",
     color: '#52a7ff', planet: earth, moons: [luna], cls: 'e',
     names: ['Meridian', 'Concord', 'Stalwart', 'Aegis', 'Endeavour', 'Lodestar',
-            'Sentinel', 'Bastion', 'Resolute', 'Vanguard', 'Tempest', 'Horizon']
+            'Sentinel', 'Bastion', 'Resolute', 'Vanguard', 'Tempest', 'Horizon',
+            'Aurora', 'Citadel', 'Paragon', 'Ironside', 'Equinox', 'Zenith',
+            'Bulwark', 'Dauntless', 'Argus', 'Sovereign', 'Pinnacle', 'Corona']
   },
   mars: {
     key: 'mars', navy: 'UMSF', fullName: 'United Mars Space Force',
     color: '#ff6a45', planet: mars, moons: [deimos, phobos], cls: 'm',
     names: ['Olympus', 'Tharsis', 'Valles', 'Ares', 'Acidalia', 'Hellas',
-            'Elysium', 'Arcadia', 'Solis', 'Argyre', 'Utopia', 'Syrtis']
+            'Elysium', 'Arcadia', 'Solis', 'Argyre', 'Utopia', 'Syrtis',
+            'Daedalia', 'Amazonis', 'Chryse', 'Isidis', 'Nepenthes', 'Eridania',
+            'Zephyria', 'Memnonia', 'Icaria', 'Aonia', 'Thaumasia', 'Noctis']
   }
 };
 const enemyOf = k => k === 'earth' ? 'mars' : 'earth';
@@ -149,6 +169,24 @@ let torpId = 0;
 let stats = { fired: { earth: 0, mars: 0 }, pdc: { earth: 0, mars: 0 }, lost: { earth: 0, mars: 0 } };
 let wallNow = 0;
 let selectedShip = null;        // {side, name} — roster click opens a closeup inset
+
+/* ---------------- campaign ---------------- */
+const campaign = {
+  round: 0,
+  score: { earth: 0, mars: 0 },
+  fleet: { earth: N_SHIPS, mars: N_SHIPS },
+  roster: { earth: SIDES.earth.names.slice(0, N_SHIPS), mars: SIDES.mars.names.slice(0, N_SHIPS) },
+  nameIdx: { earth: N_SHIPS, mars: N_SHIPS },
+  blockaded: { earth: false, mars: false },   // chokes next round's production
+  kills: { earth: 0, mars: 0 },               // cumulative enemy hulls destroyed
+  control: { ceres: null, pallas: null },
+  over: false, winner: null
+};
+function nextHullName(key) {
+  const names = SIDES[key].names;
+  const i = campaign.nameIdx[key]++;
+  return i < names.length ? names[i] : names[i % names.length] + ' II';
+}
 
 /* ---------------- logging ---------------- */
 const logEntries = [];
@@ -183,27 +221,45 @@ function picketPlan(key, nPicket) {
   return [{ moon: moons[0], n: first }, { moon: moons[1], n: nPicket - first }];
 }
 
+// alloc: number (legacy: all to strike) or {strike, ceres, pallas}
 function buildFleets(allocEarth, allocMars) {
   GR = {};
-  for (const [key, n] of [['earth', allocEarth], ['mars', allocMars]]) {
+  for (const [key, allocRaw] of [['earth', allocEarth], ['mars', allocMars]]) {
+    const alloc = typeof allocRaw === 'number'
+      ? { strike: allocRaw, ceres: 0, pallas: 0 } : allocRaw;
     const side = SIDES[key], tgt = SIDES[enemyOf(key)].planet;
-    const nDef = N_SHIPS - n;
+    const roster = campaign.roster[key];
+    const fleetN = roster.length;
+    let cursor = 0;
+    const take = n => {
+      n = clamp(n, 0, fleetN - cursor);   // never allocate hulls you don't have
+      return roster.slice(cursor, cursor += n);
+    };
+    const launchFrom = (g, target) => {
+      const dir = norm(sub(target.pos, side.planet.pos));
+      g.pos = add(side.planet.pos, mul(dir, 2.5e7));
+      g.vel = { ...side.planet.vel };
+      g.fdir = dir; g.aim = dir;
+    };
+
+    const strike = makeGroup(key, 'strike', take(alloc.strike), tgt);
+    launchFrom(strike, tgt);
+    const tasks = {};
+    for (const st of STATIONS) {
+      const tf = makeGroup(key, 'task', take(alloc[st.key] || 0), st.body);
+      launchFrom(tf, st.body);
+      tasks[st.key] = tf;
+    }
+    const nDef = fleetN - cursor;
     const nPicket = Math.floor(nDef / 3);   // a third of the defenders picket the moons
-    const strike = makeGroup(key, 'strike', side.names.slice(0, n), tgt);
-    const home   = makeGroup(key, 'defense', side.names.slice(n, n + nDef - nPicket), side.planet);
-    const dir = norm(sub(tgt.pos, side.planet.pos));
-    strike.pos = add(side.planet.pos, mul(dir, 2.5e7));
-    strike.vel = { ...side.planet.vel };
-    strike.fdir = dir; strike.aim = dir;
+    const home = makeGroup(key, 'defense', take(nDef - nPicket), side.planet);
     home.pos = { ...side.planet.pos };
     home.vel = { ...side.planet.vel };
     home.ringOm = Math.sqrt(side.planet.mu / R_DEF ** 3);
     const pickets = [];
-    let taken = N_SHIPS - nPicket;
     for (const { moon, n: np } of picketPlan(key, nPicket)) {
       if (!np) continue;
-      const picket = makeGroup(key, 'picket', side.names.slice(taken, taken + np), side.planet);
-      taken += np;
+      const picket = makeGroup(key, 'picket', take(np), side.planet);
       picket.moon = moon;
       picket.mode = 'station';
       // real orbit around a massive moon; powered loiter near a tiny one
@@ -213,19 +269,28 @@ function buildFleets(allocEarth, allocMars) {
       picket.vel = { ...moon.vel };
       pickets.push(picket);
     }
-    GR[key] = { strike, home, pickets };
+    GR[key] = { strike, home, pickets, tasks };
   }
-  allGroups = [GR.earth.strike, GR.earth.home, ...GR.earth.pickets,
-               GR.mars.strike, GR.mars.home, ...GR.mars.pickets];
-  attackGroups = [GR.earth.strike, GR.mars.strike].filter(g => g.count0 > 0);
-  // engagements happen at the planets: each strike force against the
-  // defending home fleet and moon pickets of its destination
+  allGroups = [];
+  attackGroups = [];      // every expeditionary group: strikes + task forces
+  for (const key of ['earth', 'mars']) {
+    const G = GR[key];
+    allGroups.push(G.strike, G.home, ...G.pickets, ...Object.values(G.tasks));
+    if (G.strike.count0) attackGroups.push(G.strike);
+    for (const tf of Object.values(G.tasks)) if (tf.count0) attackGroups.push(tf);
+  }
+  // engagements: each strike force against the defenders of its destination,
+  // and rival task forces contesting the same station
   pairCandidates = [];
   for (const key of ['earth', 'mars']) {
     const st = GR[key].strike, foe = GR[enemyOf(key)];
     if (!st.count0) continue;
     if (foe.home.count0) pairCandidates.push([st, foe.home]);
     for (const p of foe.pickets) pairCandidates.push([st, p]);
+  }
+  for (const st of STATIONS) {
+    const a = GR.earth.tasks[st.key], b = GR.mars.tasks[st.key];
+    if (a.count0 && b.count0) pairCandidates.push([a, b]);
   }
 }
 
@@ -244,7 +309,7 @@ function shipPos(g, s) {
     const a = ringAngle(g, s);
     return V(g.moon.pos.x + g.ringR * Math.cos(a), g.moon.pos.y + g.ringR * Math.sin(a));
   }
-  if (g.role === 'strike' && g.phase === 'parked') {
+  if ((g.role === 'strike' || g.role === 'task') && g.phase === 'parked') {
     const a = g.parkAng0 + g.parkOm * (simTime - g.parkT0) + (s.fi - (g.count0 - 1) / 2) * 0.025;
     const tp = g.planetTarget;
     return V(tp.pos.x + g.parkR * Math.cos(a), tp.pos.y + g.parkR * Math.sin(a));
@@ -264,7 +329,7 @@ function shipVel(g, s) {
     const a = ringAngle(g, s), vt = g.ringR * g.ringOm;
     return V(g.moon.vel.x - vt * Math.sin(a), g.moon.vel.y + vt * Math.cos(a));
   }
-  if (g.role === 'strike' && g.phase === 'parked') {
+  if ((g.role === 'strike' || g.role === 'task') && g.phase === 'parked') {
     const a = g.parkAng0 + g.parkOm * (simTime - g.parkT0) + (s.fi - (g.count0 - 1) / 2) * 0.025;
     const vt = g.parkR * g.parkOm, tp = g.planetTarget;
     return V(tp.vel.x - vt * Math.sin(a), tp.vel.y + vt * Math.cos(a));
@@ -296,7 +361,7 @@ function stepGroup(g, dt) {
   // gravity-assist routing: once inbound, evaluate the target's moons.
   // Only a massive moon on the near side is worth a flyby; tiny rocks are
   // ruled out honestly.
-  if (!g.assistEval && g.phase === 'decel' && dist(g.pos, tp.pos) < 1.6e9) {
+  if (!g.assistEval && g.role === 'strike' && g.phase === 'decel' && dist(g.pos, tp.pos) < 1.6e9) {
     g.assistEval = true;
     const navy = SIDES[g.side].navy, cls = SIDES[g.side].cls;
     const names = tp.moons.map(m => m.name).join('/');
@@ -323,9 +388,13 @@ function stepGroup(g, dt) {
       return;
     }
   }
-  transit(g, dt, tp.pos, tp.vel, STANDOFF, tp);
+  transit(g, dt, tp.pos, tp.vel, tp.mu > 1e12 ? STANDOFF : 2.5e6, tp);
   pushTrail(g);
 }
+
+const groupNoun = g => g.role === 'task' ? `${g.planetTarget.name} task force`
+  : g.role === 'picket' ? `${g.moon.name} picket`
+  : g.role === 'defense' ? 'home fleet' : 'strike group';
 
 // 1g burn toward a (possibly moving) target with flip-and-burn logic and
 // gravity feed-forward; if insertBody is given, capture into a circular
@@ -361,7 +430,7 @@ function transit(g, dt, tPos, tVel, arriveR, insertBody) {
         g.parkOm = Math.sqrt(insertBody.mu / g.parkR ** 3);
         g.parkT0 = simTime;
         g.phase = 'parked';
-        log(`${SIDES[g.side].navy} strike group brakes into ${insertBody.name} orbit`, SIDES[g.side].cls);
+        log(`${SIDES[g.side].navy} ${groupNoun(g)} brakes into ${insertBody.name} orbit`, SIDES[g.side].cls);
       }
     } else {
       g.vel = add(add(g.vel, mul(norm(dv), G0 * dt)), mul(grav, dt));
@@ -383,9 +452,9 @@ function transit(g, dt, tPos, tVel, arriveR, insertBody) {
 
   let thrustDir;
   if (wantDecel) {
-    if (!g.flipped && g.role === 'strike') {
+    if (!g.flipped && (g.role === 'strike' || g.role === 'task')) {
       g.flipped = true;
-      log(`${SIDES[g.side].navy} strike group flips ship — deceleration burn for ${g.planetTarget.name}`, SIDES[g.side].cls);
+      log(`${SIDES[g.side].navy} ${groupNoun(g)} flips ship — deceleration burn for ${g.planetTarget.name}`, SIDES[g.side].cls);
     }
     g.phase = 'decel';
     thrustDir = mul(norm(rv), -1);
@@ -450,6 +519,8 @@ function pushTrail(g) {
 function launchRange(relSpeed) { return 3e7 + relSpeed * 700; }
 
 function battleTitle(a, b) {
+  if (a.role === 'task' && b.role === 'task')
+    return 'BATTLE FOR ' + a.planetTarget.name.toUpperCase() + ' STATION';
   const pk = a.role === 'picket' ? a : (b.role === 'picket' ? b : null);
   if (pk) return pk.moon.name.toUpperCase() + ' PICKET ENGAGEMENT';
   const pl = a.role === 'defense' ? a.planetHome : b.planetHome;
@@ -466,6 +537,13 @@ function scanNewBattles() {
     const rs = len(rv);
     const closing = -dot(sub(b.pos, a.pos), rv) / Math.max(d, 1);
     if (closing < 1000 && d > 6e7) continue;   // not closing: no (re-)engagement
+    // a pair locked in standoff stays disengaged until someone moves on it
+    let prior = null;
+    for (let i = battles.length - 1; i >= 0; i--) {
+      const bt = battles[i];
+      if ((bt.a === a && bt.b === b) || (bt.a === b && bt.b === a)) { prior = bt; break; }
+    }
+    if (prior && prior.done && prior.standoff && closing < 1000) continue;
     if (d < launchRange(rs)) {
       const planet = a.role === 'defense' ? a.planetHome : (b.role === 'defense' ? b.planetHome : null);
       const bt = {
@@ -512,10 +590,9 @@ function trySalvo(bt, g, enemy) {
     bt.lastSalvo[g.id] = simTime;
     bt.lastTorpTime = simTime;
     stats.fired[g.side] += n;
-    const who = g.role === 'defense' ? 'home fleet' : g.role === 'picket' ? `${g.moon.name} picket` : 'strike group';
     if (n >= 3 || !bt.loggedSalvo) {
       bt.loggedSalvo = true;
-      log(`${SIDES[g.side].navy} ${who} launches ${n} torpedo${n > 1 ? 'es' : ''}`, SIDES[g.side].cls);
+      log(`${SIDES[g.side].navy} ${groupNoun(g)} launches ${n} torpedo${n > 1 ? 'es' : ''}`, SIDES[g.side].cls);
     }
   }
 }
@@ -589,8 +666,7 @@ function killShip(g, s, atPos) {
   explosions.push({ pos: atPos, wall0: wallNow, big: true });
   log(`${SIDES[g.side].navy} ${s.name} destroyed`, SIDES[g.side].cls);
   if (aliveCount(g) === 0) {
-    const what = g.role === 'defense' ? `home fleet over ${g.planetHome.name}`
-      : g.role === 'picket' ? `${g.moon.name} picket` : 'strike group';
+    const what = g.role === 'defense' ? `home fleet over ${g.planetHome.name}` : groupNoun(g);
     log(`${SIDES[g.side].navy} ${what} ANNIHILATED`, 'sys');
   }
 }
@@ -647,7 +723,9 @@ function stepBattle(bt, dt) {
   else if (aA === 0) msg = `${SIDES[B.side].navy} holds the field`;
   else if (aB === 0) msg = `${SIDES[A.side].navy} holds the field`;
   else if (bt.closing < -1000 && bt.dist > sepThresh) msg = 'fleets disengage at extreme range';
-  else if (noAmmo && simTime - bt.lastTorpTime > 120) msg = 'magazines dry — uneasy standoff';
+  else if (noAmmo && simTime - bt.lastTorpTime > 120) { msg = 'magazines dry — uneasy standoff'; bt.standoff = true; }
+  // e.g. two forces parked either side of an asteroid, neither able to shoot
+  else if (simTime - bt.lastTorpTime > 1800) { msg = 'no firing solution — standoff'; bt.standoff = true; }
   if (msg) {
     bt.done = true;
     bt.doneWall = wallNow;
@@ -656,15 +734,21 @@ function stepBattle(bt, dt) {
 }
 
 /* ---------------- captures & endgame ---------------- */
+// a homeworld falls to orbital supremacy: defenders annihilated, or the
+// parked attacker outnumbers what's left of them SUPREMACY-to-one
 function checkCaptures() {
   for (const g of attackGroups) {
+    if (g.role !== 'strike') continue;
     if (g.phase !== 'parked' || aliveCount(g) === 0) continue;
     const tgtKey = enemyOf(g.side);
     if (captured[tgtKey]) continue;
-    if (aliveCount(GR[tgtKey].home) > 0 || GR[tgtKey].pickets.some(p => aliveCount(p) > 0)) continue;
+    const defAlive = aliveCount(GR[tgtKey].home)
+      + GR[tgtKey].pickets.reduce((n, p) => n + aliveCount(p), 0);
+    if (defAlive > 0 && aliveCount(g) < SUPREMACY * defAlive) continue;
+    if (GR[tgtKey].pickets.some(p => aliveCount(p) > 0 && p.mode === 'sortie')) continue;
     if (battles.some(bt => !bt.done && (bt.a === g || bt.b === g))) continue;
     captured[tgtKey] = g.side;
-    log(`${SIDES[tgtKey].planet.name.toUpperCase()} HAS FALLEN — ${SIDES[g.side].navy} controls its orbitals`, 'sys');
+    log(`${SIDES[tgtKey].planet.name.toUpperCase()} HAS FALLEN — ${SIDES[g.side].navy} ${defAlive > 0 ? 'forces capitulation with orbital supremacy' : 'controls its orbitals'}`, 'sys');
   }
 }
 
@@ -682,40 +766,139 @@ function checkGameOver() {
   if (resolved && quiet && !pendingPicket) {
     gameOver = true;
     gameEndWall = wallNow;
-    log('— SIMULATION COMPLETE —', 'sys');
+    endRound();
   }
 }
 
-function showEndScreen() {
-  const eFell = captured.earth, mFell = captured.mars;
-  const T = document.getElementById('endTitle'), S = document.getElementById('endSub');
-  if (eFell && mFell) {
-    T.textContent = 'MUTUAL CONQUEST'; T.className = 'amberC';
-    S.innerHTML = 'Both homeworlds have fallen to the other\'s strike force.<br>Two flags over two broken worlds.';
-  } else if (eFell) {
-    T.textContent = 'MARS VICTORIOUS'; T.className = 'marsC';
-    S.innerHTML = 'The UMSF strike force holds Earth orbit unopposed.';
-  } else if (mFell) {
-    T.textContent = 'EARTH VICTORIOUS'; T.className = 'earthC';
-    S.innerHTML = 'The PFE strike force holds Mars orbit unopposed.';
-  } else if (stats.fired.earth + stats.fired.mars === 0) {
-    T.textContent = 'COLD STANDOFF'; T.className = 'amberC';
-    S.innerHTML = 'Neither commander committed ships to the attack.<br>The war never started.';
-  } else {
-    T.textContent = 'STALEMATE'; T.className = 'amberC';
-    const eAtt = GR.earth.strike.count0 > 0, mAtt = GR.mars.strike.count0 > 0;
-    S.innerHTML = eAtt && mAtt
-      ? 'Both assaults were repelled. The homeworlds endure.'
-      : `The assault on ${eAtt ? 'Mars' : 'Earth'} was repelled. The homeworlds endure.`;
+let roundResult = null;
+
+function endRound() {
+  const pts = { earth: 0, mars: 0 };
+  const lines = [];
+  const eFell = !!captured.earth, mFell = !!captured.mars;
+
+  // station control: +1 point and +1 hull of production
+  for (const st of STATIONS) {
+    const holds = {};
+    for (const key of ['earth', 'mars']) {
+      const tf = GR[key].tasks[st.key];
+      holds[key] = tf.count0 > 0 && aliveCount(tf) > 0 && tf.phase === 'parked';
+    }
+    const owner = holds.earth && !holds.mars ? 'earth' : holds.mars && !holds.earth ? 'mars' : null;
+    campaign.control[st.key] = owner;
+    if (owner) {
+      pts[owner] += 1;
+      lines.push({ side: owner, txt: `${SIDES[owner].navy} holds ${st.body.name} Station — +1 pt, +1 hull next round` });
+      log(`${SIDES[owner].navy} secures ${st.body.name} Station`, SIDES[owner].cls);
+    } else if (holds.earth && holds.mars) {
+      lines.push({ side: null, txt: `${st.body.name} Station contested — nobody scores` });
+    }
   }
-  document.getElementById('endStats').textContent =
-    `Mission time        ${fmtTime(simTime)}\n` +
-    `PFE ships lost      ${stats.lost.earth} of ${N_SHIPS}\n` +
-    `UMSF ships lost     ${stats.lost.mars} of ${N_SHIPS}\n` +
-    `Torpedoes fired     PFE ${stats.fired.earth} · UMSF ${stats.fired.mars}\n` +
-    `PDC intercepts      PFE ${stats.pdc.earth} · UMSF ${stats.pdc.mars}`;
+
+  // blockade: enemy strike parked over a surviving homeworld
+  campaign.blockaded = { earth: false, mars: false };
+  for (const key of ['earth', 'mars']) {
+    const foeKey = enemyOf(key);
+    const foe = GR[foeKey].strike;
+    if (!captured[key] && foe.count0 > 0 && aliveCount(foe) > 0 && foe.phase === 'parked') {
+      campaign.blockaded[key] = true;
+      pts[foeKey] += 2;
+      lines.push({ side: foeKey, txt: `${SIDES[foeKey].navy} blockades ${SIDES[key].planet.name} — +2 pts, shipyards choked` });
+      log(`${SIDES[foeKey].navy} blockades ${SIDES[key].planet.name} — orbital trade strangled`, 'sys');
+    }
+  }
+
+  // attrition edge
+  if (stats.lost.earth !== stats.lost.mars) {
+    const w = stats.lost.earth < stats.lost.mars ? 'earth' : 'mars';
+    pts[w] += 1;
+    lines.push({ side: w, txt: `${SIDES[w].navy} wins the exchange ${stats.lost[enemyOf(w)]}\u2013${stats.lost[w]} — +1 pt` });
+  }
+  if (!lines.length) lines.push({ side: null, txt: 'No points scored — an uneventful round.' });
+
+  campaign.kills.earth += stats.lost.mars;
+  campaign.kills.mars += stats.lost.earth;
+  campaign.score.earth += pts.earth;
+  campaign.score.mars += pts.mars;
+
+  // survivors return home; shipyards deliver new hulls
+  for (const key of ['earth', 'mars']) {
+    const survivors = [];
+    for (const g of [GR[key].strike, ...Object.values(GR[key].tasks), GR[key].home, ...GR[key].pickets])
+      for (const s of g.ships) if (s.alive) survivors.push(s.name);
+    let prod = 0;
+    if (!captured[key]) {
+      prod = campaign.blockaded[key] ? 0 : PROD_BASE;
+      for (const st of STATIONS) if (campaign.control[st.key] === key) prod += 1;
+    }
+    while (prod-- > 0 && survivors.length < FLEET_CAP) survivors.push(nextHullName(key));
+    campaign.roster[key] = survivors;
+    campaign.fleet[key] = survivors.length;
+  }
+
+  // campaign termination: conquest wins outright; otherwise play to MAX_ROUNDS
+  if (eFell || mFell) {
+    campaign.over = true;
+    campaign.winner = eFell && mFell ? null : (eFell ? 'mars' : 'earth');
+  } else if (campaign.round >= MAX_ROUNDS) {
+    campaign.over = true;
+  }
+  if (campaign.over && !campaign.winner) {
+    const c = campaign;   // tie-breaks: points, total kills, surviving hulls
+    campaign.winner =
+        c.score.earth !== c.score.mars ? (c.score.earth > c.score.mars ? 'earth' : 'mars')
+      : c.kills.earth !== c.kills.mars ? (c.kills.earth > c.kills.mars ? 'earth' : 'mars')
+      : c.fleet.earth !== c.fleet.mars ? (c.fleet.earth > c.fleet.mars ? 'earth' : 'mars')
+      : null;
+  }
+  roundResult = { pts, lines, eFell, mFell };
+  log(`— ROUND ${campaign.round} COMPLETE — ${SIDES.earth.navy} ${campaign.score.earth} · ${SIDES.mars.navy} ${campaign.score.mars}`, 'sys');
+}
+
+const LINE_COL = { earth: 'earthC', mars: 'marsC' };
+function showRoundScreen() {
+  if (campaign.over) { showCampaignEnd(); return; }
+  const r = roundResult || { pts: { earth: 0, mars: 0 }, lines: [] };
+  $('roundTitle').textContent = `ROUND ${campaign.round} of ${MAX_ROUNDS} COMPLETE`;
+  $('roundSub').innerHTML = r.lines.map(l =>
+    `<div class="${l.side ? LINE_COL[l.side] : ''}">${l.txt}</div>`).join('');
+  $('roundStats').textContent =
+    `Score               ${SIDES.earth.navy} ${campaign.score.earth} \u00b7 ${SIDES.mars.navy} ${campaign.score.mars}\n` +
+    `Fleets next round   ${SIDES.earth.navy} ${campaign.fleet.earth} \u00b7 ${SIDES.mars.navy} ${campaign.fleet.mars} hulls\n` +
+    `Hulls destroyed     ${SIDES.earth.navy} ${campaign.kills.earth} \u00b7 ${SIDES.mars.navy} ${campaign.kills.mars}\n` +
+    `Campaign clock      T+ ${fmtTime(simTime)}`;
+  showScreen('s-round');
+  $('overlay').style.display = 'flex';
+}
+
+function showCampaignEnd() {
+  const T = $('endTitle'), S = $('endSub');
+  const w = campaign.winner;
+  const r = roundResult || { eFell: false, mFell: false };
+  if (r.eFell && r.mFell) {
+    T.textContent = 'MUTUAL RUIN'; T.className = 'amberC';
+    S.innerHTML = w
+      ? `Both homeworlds burned. History gives the ${SIDES[w].fullName} the bitter edge on points.`
+      : 'Both homeworlds burned. Nobody won this war.';
+  } else if (r.eFell || r.mFell) {
+    T.textContent = (w === 'earth' ? 'EARTH' : 'MARS') + ' VICTORIOUS — CONQUEST';
+    T.className = w === 'earth' ? 'earthC' : 'marsC';
+    S.innerHTML = `${SIDES[w].fullName} forces capitulation at ${SIDES[enemyOf(w)].planet.name} in round ${campaign.round}.`;
+  } else if (w) {
+    T.textContent = (w === 'earth' ? 'EARTH' : 'MARS') + ' WINS ON POINTS';
+    T.className = w === 'earth' ? 'earthC' : 'marsC';
+    S.innerHTML = `After ${campaign.round} rounds, the ${SIDES[w].fullName} holds the strategic edge.`;
+  } else {
+    T.textContent = 'TRUE STALEMATE'; T.className = 'amberC';
+    S.innerHTML = `${campaign.round} rounds of war and nothing to show for it on either side.`;
+  }
+  $('endStats').textContent =
+    `Final score         ${SIDES.earth.navy} ${campaign.score.earth} \u00b7 ${SIDES.mars.navy} ${campaign.score.mars}\n` +
+    `Hulls destroyed     ${SIDES.earth.navy} ${campaign.kills.earth} \u00b7 ${SIDES.mars.navy} ${campaign.kills.mars}\n` +
+    `Surviving fleets    ${SIDES.earth.navy} ${campaign.fleet.earth} \u00b7 ${SIDES.mars.navy} ${campaign.fleet.mars}\n` +
+    `War duration        ${fmtTime(simTime)} over ${campaign.round} round${campaign.round > 1 ? 's' : ''}`;
   showScreen('s-end');
-  document.getElementById('overlay').style.display = 'flex';
+  $('overlay').style.display = 'flex';
 }
 
 /* ---------------- physics master step ---------------- */
@@ -723,6 +906,8 @@ function stepPhysics(h) {
   simTime += h;
   earth.update(simTime);
   mars.update(simTime);
+  ceres.update(simTime);
+  pallas.update(simTime);
   for (const g of allGroups) stepGroup(g, h);
   for (const bt of battles) if (!bt.done) stepBattle(bt, h);
   scanNewBattles();
@@ -778,7 +963,7 @@ let W = window.innerWidth, H = window.innerHeight;
 const gfxReady = (typeof GFX !== 'undefined' && GFX)
   ? GFX.init(canvas, {
       SIDES,
-      planets: [earth, mars],
+      planets: [earth, mars, ceres, pallas],
       bodies: COLLIDERS,
       helpers: { aliveCount, aliveShips, shipPos, shipVel, fmtKm }
     })
@@ -845,6 +1030,28 @@ function insetDescriptors() {
     }
     list.push({ id: 'strike-' + key, title, cx: g.pos.x, cy: g.pos.y, half, col: key === 'earth' ? 0 : 1, battle });
   }
+  // station views whenever anyone is operating near them
+  for (const st of STATIONS) {
+    const a = GR.earth.tasks[st.key], b = GR.mars.tasks[st.key];
+    const around = [a, b].filter(g => g.count0 && aliveCount(g) > 0 && dist(g.pos, st.body.pos) < 6e8);
+    if (!around.length) continue;
+    let half = 2.5e7, battle = null;
+    const owner = campaign.control[st.key];
+    let title = st.body.name.toUpperCase() + ' STATION' + (owner ? ` — ${SIDES[owner].navy}` : '');
+    for (const g of around) half = Math.max(half, dist(g.pos, st.body.pos) * 0.8);
+    for (const bt of battles) {
+      if (bt.done) continue;
+      if ((bt.a === a && bt.b === b) || (bt.a === b && bt.b === a)) {
+        title = bt.title;
+        battle = bt;
+        half = Math.max(half, dist(bt.a.pos, bt.b.pos) * 0.62);
+      }
+    }
+    list.push({
+      id: st.key, title, cx: st.body.pos.x, cy: st.body.pos.y,
+      half: Math.min(half, 4.5e8), col: st.key === 'ceres' ? 0 : 1, battle
+    });
+  }
   // ship closeup from a roster click
   if (selectedShip) {
     let found = null, fg = null;
@@ -855,7 +1062,8 @@ function insetDescriptors() {
     }
     if (found) {
       const p = shipPos(fg, found);
-      list.push({
+      // splice in right after the planet views so it never falls off the cap
+      list.splice(2, 0, {
         id: 'ship', title: `${SIDES[fg.side].navy} ${found.name.toUpperCase()}`,
         cx: p.x, cy: p.y, half: 8e6, zoomShips: 2.4,
         col: selectedShip.side === 'earth' ? 0 : 1, battle: null
@@ -919,11 +1127,20 @@ function panelHTML(key) {
       ? `PICKET  <span class="dim">0/${picket.count0} — DESTROYED</span>\n`
       : `PICKET  ${n}/${picket.count0} · ${picket.moon.name} ${PICKET_LABEL[picket.mode] || ''}\n`;
   }
-  const ammo = groupAmmo(strike) + groupAmmo(home) + pickets.reduce((a, p) => a + groupAmmo(p), 0);
+  const tasks = Object.values(GR[key].tasks);
+  for (const st of STATIONS) {
+    const tf = GR[key].tasks[st.key];
+    if (!tf.count0) continue;
+    const n = aliveCount(tf);
+    out += n === 0
+      ? `TASK    <span class="dim">0/${tf.count0} — DESTROYED</span>\n`
+      : `TASK    ${n}/${tf.count0} · ${st.body.name} ${tf.phase === 'parked' ? 'ON STATION' : PHASE_LABEL[tf.phase] || ''}\n`;
+  }
+  const ammo = [strike, home, ...pickets, ...tasks].reduce((a, g) => a + groupAmmo(g), 0);
   out += `<span class="dim">TORPS   ${ammo} in tubes · ${stats.fired[key]} fired</span>`;
   // clickable ship roster — opens a closeup inset
   out += '<div class="roster">';
-  for (const g of [strike, home, ...pickets])
+  for (const g of [strike, ...tasks, home, ...pickets])
     for (const s of g.ships) {
       const sel = selectedShip && selectedShip.side === key && selectedShip.name === s.name;
       out += `<span class="rost${s.alive ? '' : ' dead'}${sel ? ' sel' : ''}" data-name="${s.name}">` +
@@ -939,9 +1156,8 @@ function updateHUD(dtWall) {
   if (hudTimer > 0) return;
   hudTimer = 0.12;
   $('clock').textContent = 'T+ ' + fmtTime(simTime);
-  $('tscale').textContent = paused
-    ? '— PAUSED —'
-    : `TIME ${fmtScale(timeScale)} · ${autoTime ? 'AUTO' : 'MANUAL'}`;
+  $('tscale').textContent = (paused ? '— PAUSED — · ' : `TIME ${fmtScale(timeScale)} · ${autoTime ? 'AUTO' : 'MANUAL'} · `)
+    + `ROUND ${campaign.round}/${MAX_ROUNDS} · ${SIDES.earth.navy} ${campaign.score.earth}–${campaign.score.mars} ${SIDES.mars.navy}`;
   $('panelL').innerHTML = panelHTML('earth');
   $('panelR').innerHTML = panelHTML('mars');
   if (logDirty) {
@@ -1000,7 +1216,7 @@ function frame(now) {
     updateHUD(dtWall);
     if (gameOver && !endShown && wallNow - gameEndWall > 3.2) {
       endShown = true;
-      showEndScreen();
+      showRoundScreen();
     }
   }
 }
@@ -1031,64 +1247,136 @@ for (const key of ['earth', 'mars']) {
   }
 }
 
-/* ---------------- setup flow ---------------- */
+/* ---------------- setup flow & campaign rounds ---------------- */
 let allocPhase = 'earth';
-const alloc = { earth: 8, mars: 8 };
+const alloc = { earth: null, mars: null };
+let curAlloc = { strike: 0, ceres: 0, pallas: 0 };
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === id));
 }
 
+function fmtDur(t) {
+  const d = Math.floor(t / 86400), h = Math.round((t % 86400) / 3600);
+  return d > 0 ? `${d}d ${h}h` : `${h}h`;
+}
+
 function refreshAllocScreen() {
   const side = SIDES[allocPhase];
-  $('allocTitle').textContent = `${side.navy} COMMAND — ${side.planet.name.toUpperCase()}`;
+  const fleetN = campaign.fleet[allocPhase];
+  const used = curAlloc.strike + curAlloc.ceres + curAlloc.pallas;
+  $('allocTitle').textContent = `${side.navy} COMMAND — ROUND ${campaign.round + 1} of ${MAX_ROUNDS}`;
   $('allocTitle').className = allocPhase === 'earth' ? 'earthC' : 'marsC';
   $('allocSub').innerHTML =
-    `Commander, divide your <b>${N_SHIPS} warships</b>.<br>` +
-    `The strike force burns at 1g for <b>${SIDES[enemyOf(allocPhase)].planet.name}</b>; ` +
-    `the home fleet holds your orbitals, with a third of it picketing ` +
-    `<b>${side.moons.map(m => m.name).join(' and ')}</b> to flank any attacker. Your choice stays sealed.`;
-  const att = +$('allocSlider').value, def = N_SHIPS - att;
+    `Score ${SIDES.earth.navy} <b>${campaign.score.earth}</b> · <b>${campaign.score.mars}</b> ${SIDES.mars.navy}` +
+    ` &nbsp;—&nbsp; you have <b>${fleetN} warships</b>.<br>` +
+    `Capture the enemy homeworld (2:1 orbital supremacy) to win the war outright. ` +
+    `Blockades +2 pts and choke enemy shipyards; stations +1 pt and +1 hull; winning the exchange +1 pt. ` +
+    `Whatever you keep home defends (a third pickets <b>${side.moons.map(m => m.name).join(' & ')}</b>).`;
+  const dests = [
+    { k: 'strike', label: 'STRIKE → ' + SIDES[enemyOf(allocPhase)].planet.name.toUpperCase(), body: SIDES[enemyOf(allocPhase)].planet },
+    { k: 'ceres', label: 'TASK FORCE → CERES', body: ceres },
+    { k: 'pallas', label: 'TASK FORCE → PALLAS', body: pallas }
+  ];
+  let rows = '';
+  for (const dd of dests) {
+    const d = dist(side.planet.pos, dd.body.pos);
+    const owner = campaign.control[dd.k];
+    const tag = dd.k !== 'strike' && owner ? ` · held by ${SIDES[owner].navy}` : '';
+    rows += `<div class="arow"><span class="adest">${dd.label}</span>` +
+      `<span class="adist">${(d / AU).toFixed(2)} AU · ~${fmtDur(2 * Math.sqrt(d / G0))}${tag}</span>` +
+      `<span class="actl"><span class="abtn" data-k="${dd.k}" data-d="-1">−</span>` +
+      `<b class="acount" style="color:${side.color}">${curAlloc[dd.k]}</b>` +
+      `<span class="abtn" data-k="${dd.k}" data-d="1">+</span></span></div>`;
+  }
+  $('allocRows').innerHTML = rows;
+  const def = fleetN - used;
   const pk = Math.floor(def / 3);
   const col = side.color;
   let lines =
-    `STRIKE FORCE &nbsp;<span class="ships" style="color:${col}">${'▲'.repeat(att) || '—'}</span>&nbsp; ${att}<br>` +
     `HOME FLEET &nbsp;&nbsp;&nbsp;<span class="ships" style="color:${col}">${'△'.repeat(def - pk) || '—'}</span>&nbsp; ${def - pk}`;
   for (const { moon, n } of picketPlan(allocPhase, pk))
     lines += `<br>${moon.name.toUpperCase()} PICKET&nbsp;&nbsp;<span class="ships" style="color:${col}">${'△'.repeat(n) || '—'}</span>&nbsp; ${n}`;
   $('allocReadout').innerHTML = lines;
 }
 
-$('btnBegin').onclick = () => { allocPhase = 'earth'; $('allocSlider').value = 8; refreshAllocScreen(); showScreen('s-alloc'); };
-$('allocSlider').oninput = refreshAllocScreen;
+// refit at the yards while the planets move on — advanced when the next
+// round is being PLANNED so the allocation screen shows true distances
+let epochFor = 0;
+function advanceEpoch() {
+  const target = campaign.round + 1;
+  if (target === 1 || epochFor === target) return;
+  epochFor = target;
+  simTime += ROUND_GAP;
+  earth.update(simTime); mars.update(simTime);
+  ceres.update(simTime); pallas.update(simTime);
+}
+
+function beginAllocation() {
+  advanceEpoch();
+  allocPhase = 'earth';
+  curAlloc = { strike: Math.min(6, Math.floor(campaign.fleet.earth / 2)), ceres: 0, pallas: 0 };
+  refreshAllocScreen();
+  showScreen('s-alloc');
+  $('overlay').style.display = 'flex';
+}
+
+$('btnBegin').onclick = beginAllocation;
+{
+  const rowsEl = $('allocRows');
+  if (rowsEl && typeof rowsEl.addEventListener === 'function') {
+    rowsEl.addEventListener('click', e => {
+      const b = e.target.closest && e.target.closest('.abtn');
+      if (!b) return;
+      const k = b.dataset.k, d = +b.dataset.d;
+      const used = curAlloc.strike + curAlloc.ceres + curAlloc.pallas;
+      if (d > 0 && used >= campaign.fleet[allocPhase]) return;
+      curAlloc[k] = clamp(curAlloc[k] + d, 0, campaign.fleet[allocPhase]);
+      refreshAllocScreen();
+    });
+  }
+}
 $('btnCommit').onclick = () => {
-  alloc[allocPhase] = +$('allocSlider').value;
+  alloc[allocPhase] = { ...curAlloc };
   if (allocPhase === 'earth') {
     allocPhase = 'mars';
+    curAlloc = { strike: Math.min(6, Math.floor(campaign.fleet.mars / 2)), ceres: 0, pallas: 0 };
     showScreen('s-handoff');
   } else {
-    startSim();
+    $('overlay').style.display = 'none';
+    $('hud').hidden = false;
+    if (campaign.round === 0) log('WAR DECLARED — both fleets light their torch drives', 'sys');
+    startRound(alloc.earth, alloc.mars);
   }
 };
-$('btnHandoff').onclick = () => { $('allocSlider').value = 8; refreshAllocScreen(); showScreen('s-alloc'); };
+$('btnHandoff').onclick = () => { refreshAllocScreen(); showScreen('s-alloc'); };
+$('btnRound').onclick = beginAllocation;
 $('btnAgain').onclick = () => location.reload();
 
-function startSim() {
-  buildFleets(alloc.earth, alloc.mars);
-  $('overlay').style.display = 'none';
-  $('hud').hidden = false;
-  simTime = 0; timeScale = 1; autoTime = true; paused = false;
+function startRound(allocE, allocM) {
+  advanceEpoch();
+  campaign.round++;
+  battles = [];
+  explosions = [];
+  captured = { earth: null, mars: null };
+  stats = { fired: { earth: 0, mars: 0 }, pdc: { earth: 0, mars: 0 }, lost: { earth: 0, mars: 0 } };
+  selectedShip = null;
+  roundResult = null;
+  gameOver = false; endShown = false;
+  paused = false; autoTime = true; timeScale = 1;
+  buildFleets(allocE, allocM);
   running = true;
-  log('WAR DECLARED — both fleets light their torch drives', 'sys');
+  log(`— ROUND ${campaign.round} of ${MAX_ROUNDS} —`, 'sys');
   for (const key of ['earth', 'mars']) {
-    const s = SIDES[key];
-    if (alloc[key] > 0)
-      log(`${s.navy} strike group (${alloc[key]} ships) departs ${s.planet.name} — 1g burn`, s.cls);
-    else
-      log(`${s.navy} commits no ships to the attack — full defensive posture`, s.cls);
-    if (GR[key].home.count0 > 0)
-      log(`${s.navy} home fleet (${GR[key].home.count0} ships) holds ${s.planet.name} orbit`, s.cls);
-    for (const p of GR[key].pickets)
-      log(`${s.navy} stations ${p.count0}-ship picket at ${p.moon.name}`, s.cls);
+    const s = SIDES[key], G = GR[key];
+    if (G.strike.count0)
+      log(`${s.navy} strike group (${G.strike.count0} ships) burns for ${SIDES[enemyOf(key)].planet.name}`, s.cls);
+    for (const st of STATIONS)
+      if (G.tasks[st.key].count0)
+        log(`${s.navy} task force (${G.tasks[st.key].count0} ships) burns for ${st.body.name} Station`, s.cls);
+    if (G.home.count0)
+      log(`${s.navy} home fleet (${G.home.count0} ships) holds ${s.planet.name} orbit`, s.cls);
+    for (const pkt of G.pickets)
+      log(`${s.navy} stations ${pkt.count0}-ship picket at ${pkt.moon.name}`, s.cls);
   }
 }

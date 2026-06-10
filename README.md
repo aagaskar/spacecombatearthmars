@@ -17,7 +17,27 @@ open index.html
 python3 -m http.server 8000   # then visit http://localhost:8000
 ```
 
-## How a game plays out
+## The campaign
+
+A war is a **best-of-5-round campaign** with persistent fleets:
+
+- Each round, both commanders secretly split their fleet between the
+  **strike force** (enemy homeworld), **task forces** for **Ceres and
+  Pallas Station**, and home defense. Survivors carry over.
+- **Win the war outright by conquest**: a homeworld falls when its
+  defenders are annihilated *or* a parked attacker holds 2:1 orbital
+  supremacy over what's left.
+- Otherwise rounds score points — **blockade** of the enemy homeworld
+  +2 (and their shipyards build nothing next round), each **station held**
+  +1 (and +1 hull of production), **winning the attrition exchange** +1.
+  Highest score after 5 rounds wins; ties break on total kills, then
+  surviving hulls.
+- Between rounds the yards deliver new hulls (+2 base, capped at 16) and
+  **60 days pass — the planets keep moving**, so Earth–Mars and belt
+  transit geometry shifts every round and attack windows matter. The
+  allocation screen shows live distances and 1g transit times.
+
+## How a round plays out
 
 1. **Earth commander (People's Fleet of Earth, PFE)** secretly splits 12
    warships between a *strike force* (sent to Mars) and defenders, then
@@ -82,7 +102,8 @@ no CDN, no build step; software fallback message if WebGL is unavailable).
 
 | Thing | Model |
 |---|---|
-| Planets | True Keplerian ellipses around the Sun (Earth e = 0.0167, Mars e = 0.0934, real perihelion longitudes), solved via Newton iteration on Kepler's equation each step |
+| Planets | True Keplerian ellipses around the Sun (Earth e = 0.0167, Mars e = 0.0934, Ceres e = 0.0785, Pallas e = 0.23, real perihelion longitudes), solved via Newton iteration on Kepler's equation each step |
+| Belt stations | Ceres and Pallas at real orbital radii and masses — task forces park in genuine (tiny) gravity-well orbits, and the rocks block torpedoes; two forces can end up wedged in a no-firing-solution standoff on opposite sides |
 | Moons | Luna (384,400 km, 27.3 d), Phobos (9,376 km, 7.7 h) and Deimos (23,463 km, 30.3 h) on circular orbits with real radii and masses |
 | Gravity | Sun, Earth, Mars and Luna pull on every thrusting ship and torpedo (Phobos/Deimos are real terrain but their gravity is honestly negligible) |
 | Transit | True flip-and-burn at 1 g toward a moving planet, with gravity feed-forward in the braking solution; ~260,000 s for ~1.1 AU |

@@ -244,12 +244,12 @@ window.GFX = (function () {
       })));
     }
 
-    // planets + defense rings
+    // planets, belt stations, defense rings
     const planetMeshes = new Map(), defRings = new Map(), planetGlows = new Map();
     for (const p of env.planets) {
-      const kind = p.name === 'Earth' ? 'earth' : 'mars';
+      const kind = p.name === 'Earth' ? 'earth' : p.name === 'Mars' ? 'mars' : 'rock';
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(p.name === 'Earth' ? 2.7 : 2.3, 32, 20),
+        new THREE.SphereGeometry(p.sysR || 2, 32, 20),
         new THREE.MeshLambertMaterial({ map: planetTex(kind), emissive: 0x10141c }));
       scene.add(mesh);
       planetMeshes.set(p.name, mesh);
@@ -257,9 +257,10 @@ window.GFX = (function () {
         map: glowTex('rgba(255,255,255,1)'), transparent: true, depthWrite: false,
         blending: THREE.AdditiveBlending, color: p.color, opacity: 0.4
       }));
-      glow.scale.setScalar(11);
+      glow.scale.setScalar((p.sysR || 2) * 4.1);
       scene.add(glow);
       planetGlows.set(p.name, glow);
+      if (!p.sideKey) continue;          // only the homeworlds carry defense rings
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(4.0, 4.18, 48),
         new THREE.MeshBasicMaterial({
@@ -349,26 +350,24 @@ window.GFX = (function () {
     for (const p of env.planets) {
       const m = S.planetMeshes.get(p.name);
       m.position.set(p.pos.x / SYS, 0, p.pos.y / SYS);
-      m.rotation.y = view.simTime / (p.name === 'Earth' ? 86164 : 88775) * TAU;
+      m.rotation.y = view.simTime / (p.rotPeriod || 86400) * TAU;
       const glow = S.planetGlows.get(p.name);
       glow.position.copy(m.position);
       glow.material.opacity = 0.4 * Math.min(Math.max((cs.dist - 60) / 400, 0.08), 1);
+      const sp = project(m.position, S.cam, 0, 0, W, H);
+      if (sp) label('pl-' + p.name, sp.x, sp.y - 22, p.name.toUpperCase(), 'rgba(200,220,255,0.8)', 10);
+      if (!p.sideKey) continue;
       const ring = S.defRings.get(p.name);
       ring.position.copy(m.position);
-      const sideKey = p.name === 'Earth' ? 'earth' : 'mars';
-      const home = view.groups.find(g => g.side === sideKey && g.role === 'defense');
+      const home = view.groups.find(g => g.side === p.sideKey && g.role === 'defense');
       const n = home ? env.helpers.aliveCount(home) : 0;
       ring.visible = !!home && home.count0 > 0;
-      ring.material.color.set(n > 0 ? env.SIDES[sideKey].color : 0x5a6a85);
+      ring.material.color.set(n > 0 ? env.SIDES[p.sideKey].color : 0x5a6a85);
       ring.material.opacity = n > 0 ? 0.4 : 0.15;
-      const sp = project(m.position, S.cam, 0, 0, W, H);
-      if (sp) {
-        label('pl-' + p.name, sp.x, sp.y - 22, p.name.toUpperCase(), 'rgba(200,220,255,0.8)', 10);
-        if (home && home.count0 > 0)
-          label('home-' + p.name, sp.x, sp.y + 22,
-            n > 0 ? `HOME ${n}` : 'HOME ✕',
-            n > 0 ? env.SIDES[sideKey].color : '#5a6a85', 9);
-      }
+      if (sp && home && home.count0 > 0)
+        label('home-' + p.name, sp.x, sp.y + 22,
+          n > 0 ? `HOME ${n}` : 'HOME ✕',
+          n > 0 ? env.SIDES[p.sideKey].color : '#5a6a85', 9);
     }
 
     // strike fleets + trails
@@ -814,7 +813,7 @@ window.GFX = (function () {
     renderer.clear(true, true, false);
     renderSystem(view);
 
-    const list = view.insets.slice(0, 5);
+    const list = view.insets.slice(0, 6);
     const rects = insetRects(list);
     const used = new Set();
     for (const desc of list) {
