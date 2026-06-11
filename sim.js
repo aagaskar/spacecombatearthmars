@@ -235,10 +235,16 @@ function buildFleets(allocEarth, allocMars) {
       n = clamp(n, 0, fleetN - cursor);   // never allocate hulls you don't have
       return roster.slice(cursor, cursor += n);
     };
+    // expeditions begin in a real parking orbit and break it under thrust:
+    // start at the point of the orbit where the orbital velocity already
+    // points at the destination, so the departure burn flows out of it
     const launchFrom = (g, target) => {
       const dir = norm(sub(target.pos, side.planet.pos));
-      g.pos = add(side.planet.pos, mul(dir, 2.5e7));
-      g.vel = { ...side.planet.vel };
+      const th = Math.atan2(-dir.x, dir.y);            // tangent here == dir
+      const r0 = 2.2e7;
+      const vc = Math.sqrt(side.planet.mu / r0);
+      g.pos = add(side.planet.pos, V(r0 * Math.cos(th), r0 * Math.sin(th)));
+      g.vel = add(side.planet.vel, mul(dir, vc));
       g.fdir = dir; g.aim = dir;
     };
 
@@ -1371,10 +1377,10 @@ function startRound(allocE, allocM) {
   for (const key of ['earth', 'mars']) {
     const s = SIDES[key], G = GR[key];
     if (G.strike.count0)
-      log(`${s.navy} strike group (${G.strike.count0} ships) burns for ${SIDES[enemyOf(key)].planet.name}`, s.cls);
+      log(`${s.navy} strike group (${G.strike.count0} ships) breaks ${s.planet.name} orbit — 1g burn for ${SIDES[enemyOf(key)].planet.name}`, s.cls);
     for (const st of STATIONS)
       if (G.tasks[st.key].count0)
-        log(`${s.navy} task force (${G.tasks[st.key].count0} ships) burns for ${st.body.name} Station`, s.cls);
+        log(`${s.navy} task force (${G.tasks[st.key].count0} ships) breaks orbit for ${st.body.name} Station`, s.cls);
     if (G.home.count0)
       log(`${s.navy} home fleet (${G.home.count0} ships) holds ${s.planet.name} orbit`, s.cls);
     for (const pkt of G.pickets)

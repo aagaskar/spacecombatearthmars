@@ -216,30 +216,84 @@ window.GFX = (function () {
   }
 
   /* ---------------- ship asset ---------------- */
-  function buildShip(color) {
-    const grp = new THREE.Group();
-    const mat = new THREE.MeshLambertMaterial({
-      color, emissive: new THREE.Color(color).multiplyScalar(0.28)
-    });
-    const hull = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.44, 2.0, 8), mat);
-    hull.geometry.rotateX(Math.PI / 2);
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.31, 0.9, 8), mat);
-    nose.geometry.rotateX(Math.PI / 2);
-    nose.position.z = 1.45;
-    const noz = new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.26, 0.5, 8), mat);
-    noz.geometry.rotateX(Math.PI / 2);
-    noz.position.z = -1.2;
-    const plume = new THREE.Mesh(
-      new THREE.ConeGeometry(0.30, 2.6, 8),
-      new THREE.MeshBasicMaterial({
-        color: 0xaadcff, transparent: true, opacity: 0.8,
+  // a small torch warship: faceted hex hull, forward command section,
+  // radiator panels, engine skirt with a triple bell cluster, PDC turret
+  // mounts and a two-layer drive plume. Geometries are shared; the hull
+  // and accent materials tint per faction.
+  const SHIP_GEO = {};
+  function shipGeos() {
+    if (SHIP_GEO.hull) return SHIP_GEO;
+    const rz = g => { g.rotateX(Math.PI / 2); return g; };   // length along +Z
+    SHIP_GEO.hull = rz(new THREE.CylinderGeometry(0.30, 0.40, 1.75, 6));
+    SHIP_GEO.fwd = rz(new THREE.CylinderGeometry(0.20, 0.28, 0.55, 6));
+    SHIP_GEO.nose = rz(new THREE.ConeGeometry(0.20, 0.42, 6));
+    SHIP_GEO.stripe = rz(new THREE.CylinderGeometry(0.405, 0.405, 0.09, 6));
+    SHIP_GEO.skirt = rz(new THREE.CylinderGeometry(0.44, 0.33, 0.32, 6));
+    SHIP_GEO.bell = rz(new THREE.ConeGeometry(0.11, 0.26, 8));
+    SHIP_GEO.rad = new THREE.BoxGeometry(0.02, 0.50, 0.85);
+    SHIP_GEO.turret = new THREE.CylinderGeometry(0.055, 0.075, 0.10, 6);
+    SHIP_GEO.plumeCore = rz(new THREE.ConeGeometry(0.13, 2.3, 8));
+    SHIP_GEO.plumeOuter = rz(new THREE.ConeGeometry(0.30, 3.1, 8));
+    return SHIP_GEO;
+  }
+  let SHIP_MATS = null;
+  function shipMats() {
+    if (SHIP_MATS) return SHIP_MATS;
+    SHIP_MATS = {
+      plumeCore: new THREE.MeshBasicMaterial({
+        color: 0xeaf6ff, transparent: true, opacity: 0.9,
         blending: THREE.AdditiveBlending, depthWrite: false
-      }));
-    plume.geometry.rotateX(Math.PI / 2);
-    plume.position.z = -2.6;
-    grp.add(hull, nose, noz, plume);
+      }),
+      plumeOuter: new THREE.MeshBasicMaterial({
+        color: 0x7fc4ff, transparent: true, opacity: 0.3,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      }),
+      radiator: new THREE.MeshPhongMaterial({ color: 0x2c313a, emissive: 0x521606, flatShading: true }),
+      dark: new THREE.MeshPhongMaterial({ color: 0x394049, flatShading: true, shininess: 40, specular: 0x444a55 })
+    };
+    return SHIP_MATS;
+  }
+  function buildShip(color) {
+    const G = shipGeos(), M = shipMats();
+    const hullMat = new THREE.MeshPhongMaterial({ flatShading: true, shininess: 28, specular: 0x39404c });
+    const accMat = new THREE.MeshPhongMaterial({ flatShading: true, shininess: 14 });
+    const grp = new THREE.Group();
+    const add = (geo, mat, x, y, z) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      grp.add(m);
+      return m;
+    };
+    add(G.hull, hullMat, 0, 0, -0.15);
+    add(G.fwd, hullMat, 0, 0, 0.95);
+    add(G.nose, accMat, 0, 0, 1.45);
+    add(G.stripe, accMat, 0, 0, 0.48);
+    add(G.skirt, M.dark, 0, 0, -1.15);
+    add(G.bell, M.dark, 0, 0.13, -1.42);
+    add(G.bell, M.dark, -0.12, -0.08, -1.42);
+    add(G.bell, M.dark, 0.12, -0.08, -1.42);
+    add(G.rad, M.radiator, -0.36, 0, -0.30);
+    add(G.rad, M.radiator, 0.36, 0, -0.30);
+    add(G.turret, M.dark, 0, 0.31, 0.30);
+    add(G.turret, M.dark, 0, -0.31, -0.20);
+    const plume = new THREE.Group();
+    const pc = new THREE.Mesh(G.plumeCore, M.plumeCore);
+    pc.position.z = -2.55;
+    const po = new THREE.Mesh(G.plumeOuter, M.plumeOuter);
+    po.position.z = -2.95;
+    plume.add(pc, po);
+    grp.add(plume);
     grp.userData.plume = plume;
-    grp.userData.mat = mat;
+    grp.userData.setColor = c => {
+      const col = new THREE.Color(c);
+      hullMat.color.copy(col).lerp(new THREE.Color(0x9aa1ab), 0.55);
+      hullMat.emissive = hullMat.emissive || new THREE.Color();
+      hullMat.emissive.copy(col).multiplyScalar(0.10);
+      accMat.color.copy(col);
+      accMat.emissive = accMat.emissive || new THREE.Color();
+      accMat.emissive.copy(col).multiplyScalar(0.30);
+    };
+    grp.userData.setColor(color);
     return grp;
   }
   /* ---------------- explosion sprite pool ---------------- */
@@ -444,8 +498,7 @@ window.GFX = (function () {
     }
     const m = arr[i];
     m.visible = true;
-    m.userData.mat.color.set(color);
-    m.userData.mat.emissive.set(color).multiplyScalar(0.28);
+    m.userData.setColor(color);
     return m;
   }
 
@@ -697,8 +750,7 @@ window.GFX = (function () {
       iv.scene.add(s);
       iv.ships[i] = s;
     }
-    s.userData.mat.color.set(color);
-    s.userData.mat.emissive.set(color).multiplyScalar(0.28);
+    s.userData.setColor(color);
     s.visible = true;
     return s;
   }
