@@ -48,54 +48,171 @@ window.GFX = (function () {
     x.fillStyle = g; x.fillRect(0, 0, 32, 32);
     return new THREE.CanvasTexture(c);
   }
-  function blob(x, r, cx, cy, rx, ry, rot, color, alpha) {
-    x.save();
-    x.translate(cx, cy); x.rotate(rot);
-    x.globalAlpha = alpha;
-    x.fillStyle = color;
-    x.beginPath(); x.ellipse(0, 0, rx, ry, 0, 0, TAU); x.fill();
-    x.restore();
+  // try to upgrade to a real texture (NASA imagery vendored in the repo);
+  // fails quietly under file:// (canvas security) or headless — the
+  // procedural fallback below stays in place
+  function tryLoad(url, cb) {
+    try {
+      new THREE.TextureLoader().load(url, t => cb(t), undefined, () => {});
+    } catch (e) { /* keep procedural */ }
   }
-  function planetTex(kind) {
-    const c = makeCanvas(512, 256), x = c.getContext('2d');
-    const R = mulberry(kind === 'earth' ? 71 : kind === 'mars' ? 12 : kind === 'moon' ? 5 : 99);
-    if (kind === 'earth') {
-      const g = x.createLinearGradient(0, 0, 0, 256);
-      g.addColorStop(0, '#9bb7d8'); g.addColorStop(0.18, '#1d54a8');
-      g.addColorStop(0.5, '#1b62c4'); g.addColorStop(0.82, '#1d54a8');
-      g.addColorStop(1, '#9bb7d8');
-      x.fillStyle = g; x.fillRect(0, 0, 512, 256);
-      for (let i = 0; i < 38; i++)
-        blob(x, R, R() * 512, 40 + R() * 176, 18 + R() * 58, 9 + R() * 26, R() * 3,
-          ['#3a6e35', '#577d3a', '#7b7f46', '#4c6b30'][i & 3], 0.95);
-      for (let i = 0; i < 46; i++)
-        blob(x, R, R() * 512, R() * 256, 22 + R() * 60, 5 + R() * 14, R() * 3, '#ffffff', 0.16);
-      x.fillStyle = 'rgba(240,248,255,0.95)';
-      x.fillRect(0, 0, 512, 14); x.fillRect(0, 242, 512, 14);
-    } else if (kind === 'mars') {
-      const g = x.createLinearGradient(0, 0, 0, 256);
-      g.addColorStop(0, '#c4805a'); g.addColorStop(0.5, '#b54f28');
-      g.addColorStop(1, '#c4805a');
-      x.fillStyle = g; x.fillRect(0, 0, 512, 256);
-      for (let i = 0; i < 42; i++)
-        blob(x, R, R() * 512, R() * 256, 16 + R() * 64, 8 + R() * 24, R() * 3,
-          ['#8a3a20', '#d9794a', '#6e2d18', '#c9682f'][i & 3], 0.5);
-      x.fillStyle = 'rgba(245,240,235,0.9)';
-      x.fillRect(0, 0, 512, 8); x.fillRect(0, 250, 512, 6);
-    } else { // moon / rock
-      x.fillStyle = kind === 'moon' ? '#8d9099' : '#7d7268';
-      x.fillRect(0, 0, 512, 256);
-      for (let i = 0; i < 70; i++) {
-        const cx = R() * 512, cy = R() * 256, r = 2 + R() * 14;
-        x.globalAlpha = 0.5;
-        x.fillStyle = R() < 0.5 ? '#6f7178' : '#a3a6ad';
-        x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill();
-        x.globalAlpha = 0.35; x.fillStyle = '#52555c';
-        x.beginPath(); x.arc(cx + r * 0.2, cy + r * 0.2, r * 0.6, 0, TAU); x.fill();
+
+  /* ---------------- procedural planet surfaces (fBM noise) ---------------- */
+  function makeNoise(seed) {
+    const R = mulberry(seed);
+    const N = 128;
+    const g = new Float32Array(N * N);
+    for (let i = 0; i < N * N; i++) g[i] = R();
+    return (x, y) => {
+      const xi = Math.floor(x), yi = Math.floor(y);
+      const fx = x - xi, fy = y - yi;
+      const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+      const x0 = ((xi % N) + N) % N, x1 = (x0 + 1) % N;
+      const y0 = ((yi % N) + N) % N, y1 = (y0 + 1) % N;
+      const a = g[y0 * N + x0], b = g[y0 * N + x1], c = g[y1 * N + x0], d = g[y1 * N + x1];
+      return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+    };
+  }
+  function fbm(n, x, y, oct) {
+    let v = 0, amp = 0.5, f = 1;
+    for (let o = 0; o < oct; o++) { v += amp * n(x * f, y * f); amp *= 0.5; f *= 2; }
+    return v;
+  }
+
+  const SURFACES = {};
+  function planetSurface(kind) {
+    if (SURFACES[kind]) return SURFACES[kind];
+    const Wt = (kind === 'earth' || kind === 'mars') ? 1024 : 512, Ht = Wt / 2;
+    const seed = { earth: 71, mars: 12, moon: 5, rock: 99, rock2: 47 }[kind] || 7;
+    const n = makeNoise(seed), n2 = makeNoise(seed + 1000);
+    const elev = new Float32Array(Wt * Ht);
+    for (let y = 0; y < Ht; y++) {
+      for (let x = 0; x < Wt; x++) {
+        // mirror-fold u so the texture wraps seamlessly
+        const u = (x < Wt / 2 ? x : Wt - x) / Wt * 40;
+        const v = y / Ht * 20;
+        elev[y * Wt + x] = fbm(n, u, v, 5);
       }
-      x.globalAlpha = 1;
+    }
+    // craters for airless bodies
+    if (kind !== 'earth' && kind !== 'mars') {
+      const R = mulberry(seed + 7);
+      const count = 110;
+      for (let c = 0; c < count; c++) {
+        const cx = R() * Wt, cy = Ht * 0.08 + R() * Ht * 0.84, cr = 3 + R() * R() * 26;
+        const depth = 0.12 + R() * 0.2;
+        for (let y = Math.max(0, cy - cr | 0); y < Math.min(Ht, cy + cr); y++)
+          for (let x = Math.max(0, cx - cr | 0); x < Math.min(Wt, cx + cr); x++) {
+            const d = Math.hypot(x - cx, y - cy) / cr;
+            if (d > 1) continue;
+            // bowl with a raised rim
+            const prof = d < 0.78 ? -depth * (1 - d / 0.78) : depth * 0.7 * (1 - Math.abs(d - 0.89) / 0.11);
+            elev[y * Wt + x] += prof;
+          }
+      }
+    }
+    const img = new Uint8ClampedArray(Wt * Ht * 4);
+    const bmp = new Uint8ClampedArray(Wt * Ht * 4);
+    const mix = (a, b, t) => a + (b - a) * Math.min(Math.max(t, 0), 1);
+    for (let y = 0; y < Ht; y++) {
+      const lat = Math.abs(y / Ht * 2 - 1);
+      for (let x = 0; x < Wt; x++) {
+        const i = y * Wt + x, e = elev[i];
+        const u = (x < Wt / 2 ? x : Wt - x) / Wt * 12, v = y / Ht * 6;
+        const big = fbm(n2, u, v, 3);          // continental-scale variation
+        let r, g, b;
+        if (kind === 'earth') {
+          if (e < 0.5) { const t = e / 0.5; r = mix(8, 24, t); g = mix(38, 92, t); b = mix(92, 168, t); }
+          else { const t = (e - 0.5) / 0.5; r = mix(58, 152, t); g = mix(108, 134, t); b = mix(48, 88, t); }
+          if (lat > 0.82 + 0.05 * (big - 0.5)) { r = 238; g = 244; b = 250; }
+        } else if (kind === 'mars') {
+          const t = (e - 0.2) / 0.6;
+          r = mix(96, 201, t); g = mix(40, 115, t); b = mix(24, 68, t);
+          if (big < 0.42) { r *= 0.72; g *= 0.7; b *= 0.7; }     // dark maria
+          const cap = 0.86 + 0.05 * (big - 0.5);
+          if (lat > cap) { const s = Math.min((lat - cap) / 0.04, 1); r = mix(r, 242, s); g = mix(g, 238, s); b = mix(b, 232, s); }
+        } else if (kind === 'moon') {
+          let gr = 92 + 120 * (e - 0.2);
+          if (big < 0.44) gr *= 0.72;                            // maria
+          r = gr; g = gr; b = gr * 1.03;
+        } else {                                                  // rock / rock2
+          const base = kind === 'rock2' ? [88, 93, 99] : [112, 100, 85];
+          const s = 0.45 + 0.9 * e;
+          r = base[0] * s; g = base[1] * s; b = base[2] * s;
+        }
+        img[i * 4] = r; img[i * 4 + 1] = g; img[i * 4 + 2] = b; img[i * 4 + 3] = 255;
+        const h = Math.min(Math.max(e, 0), 1) * 255;
+        bmp[i * 4] = h; bmp[i * 4 + 1] = h; bmp[i * 4 + 2] = h; bmp[i * 4 + 3] = 255;
+      }
+    }
+    if (kind === 'rock') {                     // Ceres' bright Occator spots
+      const spots = [[0.31, 0.42], [0.33, 0.44], [0.68, 0.55]];
+      for (const [sx, sy] of spots)
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+          if (dx * dx + dy * dy > 5) continue;
+          const i = ((sy * Ht | 0) + dy) * Wt + ((sx * Wt | 0) + dx);
+          img[i * 4] = 235; img[i * 4 + 1] = 235; img[i * 4 + 2] = 228;
+        }
+    }
+    const toTex = data => {
+      const c = makeCanvas(Wt, Ht);
+      c.getContext('2d').putImageData(new ImageData(data, Wt, Ht), 0, 0);
+      return new THREE.CanvasTexture(c);
+    };
+    SURFACES[kind] = { map: toTex(img), bump: toTex(bmp) };
+    return SURFACES[kind];
+  }
+
+  function cloudTexFallback() {
+    const c = makeCanvas(512, 256), x = c.getContext('2d');
+    x.fillStyle = '#000'; x.fillRect(0, 0, 512, 256);
+    const R = mulberry(33);
+    x.fillStyle = '#fff';
+    for (let i = 0; i < 90; i++) {
+      x.globalAlpha = 0.05 + R() * 0.2;
+      x.save();
+      x.translate(R() * 512, R() * 256); x.rotate(R() * 3);
+      x.beginPath(); x.ellipse(0, 0, 14 + R() * 70, 4 + R() * 14, 0, 0, TAU); x.fill();
+      x.restore();
     }
     return new THREE.CanvasTexture(c);
+  }
+
+  // shared materials, upgraded asynchronously with real NASA imagery
+  const MATS = {};
+  function planetMat(kind) {
+    if (MATS[kind]) return MATS[kind];
+    const s = planetSurface(kind);
+    const m = new THREE.MeshPhongMaterial({
+      map: s.map, bumpMap: s.bump, bumpScale: 0.035,
+      emissive: 0x141a24, shininess: kind === 'earth' ? 16 : 4, specular: 0x1c222c
+    });
+    if (kind === 'earth') {
+      tryLoad('vendor/textures/earth.jpg', t => { m.map = t; m.needsUpdate = true; });
+      tryLoad('vendor/textures/earth-bump.png', t => { m.bumpMap = t; m.needsUpdate = true; });
+      tryLoad('vendor/textures/earth-water.png', t => {
+        m.specularMap = t;
+        m.specular = new THREE.Color(0x8fb3d9);
+        m.shininess = 26;
+        m.needsUpdate = true;
+      });
+    }
+    MATS[kind] = m;
+    return m;
+  }
+
+  let cloudMat = null;
+  function addClouds(mesh, radius) {
+    if (!cloudMat) {
+      cloudMat = new THREE.MeshLambertMaterial({
+        map: cloudTexFallback(), transparent: true, opacity: 0.55,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      });
+      tryLoad('vendor/textures/clouds.jpg', t => { cloudMat.map = t; cloudMat.needsUpdate = true; });
+    }
+    const cm = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.018, 40, 24), cloudMat);
+    mesh.add(cm);
+    mesh.userData.clouds = cm;
   }
 
   /* ---------------- ship asset ---------------- */
@@ -219,6 +336,14 @@ window.GFX = (function () {
       })));
     }
 
+    // Milky Way backdrop (NASA Tycho catalog skymap, dimmed to keep contrast)
+    tryLoad('vendor/textures/starmap.jpg', t => {
+      const sky = new THREE.Mesh(new THREE.SphereGeometry(8000, 48, 24),
+        new THREE.MeshBasicMaterial({ map: t, side: THREE.BackSide, color: 0x55606e, depthWrite: false }));
+      sky.rotation.set(0.9, 0, 0.35);
+      scene.add(sky);
+    });
+
     // sun
     const sunGlow = new THREE.Sprite(new THREE.SpriteMaterial({
       map: glowTex('rgba(255,225,160,1)'), transparent: true,
@@ -226,6 +351,10 @@ window.GFX = (function () {
     }));
     sunGlow.scale.set(85, 85, 1);
     scene.add(sunGlow);
+    tryLoad('vendor/textures/sun.png', t => {
+      sunGlow.material.map = t;
+      sunGlow.material.needsUpdate = true;
+    });
     scene.add(new THREE.Mesh(new THREE.SphereGeometry(6, 24, 16),
       new THREE.MeshBasicMaterial({ color: 0xfff2cc })));
 
@@ -247,10 +376,10 @@ window.GFX = (function () {
     // planets, belt stations, defense rings
     const planetMeshes = new Map(), defRings = new Map(), planetGlows = new Map();
     for (const p of env.planets) {
-      const kind = p.name === 'Earth' ? 'earth' : p.name === 'Mars' ? 'mars' : 'rock';
-      const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(p.sysR || 2, 32, 20),
-        new THREE.MeshLambertMaterial({ map: planetTex(kind), emissive: 0x10141c }));
+      const kind = p.name === 'Earth' ? 'earth' : p.name === 'Mars' ? 'mars'
+        : p.name === 'Ceres' ? 'rock' : 'rock2';
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(p.sysR || 2, 48, 28), planetMat(kind));
+      if (kind === 'earth') addClouds(mesh, p.sysR || 2);
       scene.add(mesh);
       planetMeshes.set(p.name, mesh);
       const glow = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -307,6 +436,19 @@ window.GFX = (function () {
     }
     return f;
   }
+  function sysShip(i, color) {
+    const arr = sys.homeShips || (sys.homeShips = []);
+    if (!arr[i]) {
+      arr[i] = buildShip(0xffffff);
+      sys.scene.add(arr[i]);
+    }
+    const m = arr[i];
+    m.visible = true;
+    m.userData.mat.color.set(color);
+    m.userData.mat.emissive.set(color).multiplyScalar(0.28);
+    return m;
+  }
+
   function sysTrail(g) {
     let t = sys.trails.get(g.id);
     if (!t) {
@@ -351,6 +493,7 @@ window.GFX = (function () {
       const m = S.planetMeshes.get(p.name);
       m.position.set(p.pos.x / SYS, 0, p.pos.y / SYS);
       m.rotation.y = view.simTime / (p.rotPeriod || 86400) * TAU;
+      if (m.userData.clouds) m.userData.clouds.rotation.y = view.simTime / 86400 * TAU * -0.32;
       const glow = S.planetGlows.get(p.name);
       glow.position.copy(m.position);
       glow.material.opacity = 0.4 * Math.min(Math.max((cs.dist - 60) / 400, 0.08), 1);
@@ -419,6 +562,38 @@ window.GFX = (function () {
       tr.line.geometry.attributes.color.needsUpdate = true;
     }
 
+    // home fleets & moon pickets resolve into individual ships as you zoom
+    // in, riding the visual defense ring (their true orbits sit inside the
+    // exaggerated planet sphere)
+    let hi = 0;
+    if (cs.dist < 420) {
+      const ZP = new THREE.Vector3(0, 0, 1);
+      for (const g of view.groups) {
+        if (hi >= 34) break;
+        const station = g.role === 'defense' || (g.role === 'picket' && g.mode === 'station');
+        if (!station || env.helpers.aliveCount(g) === 0) continue;
+        const pl = g.planetHome;
+        const px = pl.pos.x / SYS, pz = pl.pos.y / SYS;
+        const ringR = g.role === 'defense' ? 4.09 : (pl.sysR || 2) + 2.9;
+        const ships = env.helpers.aliveShips(g);
+        for (let k = 0; k < ships.length && hi < 34; k++) {
+          const sp = env.helpers.shipPos(g, ships[k]);
+          let ux = sp.x - pl.pos.x, uy = sp.y - pl.pos.y;
+          const l = Math.hypot(ux, uy) || 1;
+          ux /= l; uy /= l;
+          // pickets share one bearing (their moon) — fan them out slightly
+          let ang = Math.atan2(uy, ux);
+          if (g.role === 'picket') ang += (k - (ships.length - 1) / 2) * 0.1;
+          const m = sysShip(hi++, env.SIDES[g.side].color);
+          m.position.set(px + Math.cos(ang) * ringR, 0, pz + Math.sin(ang) * ringR);
+          m.quaternion.setFromUnitVectors(ZP, new THREE.Vector3(-Math.sin(ang), 0, Math.cos(ang)));
+          m.scale.setScalar(mScale * 0.55);
+          m.userData.plume.visible = false;
+        }
+      }
+    }
+    if (sys.homeShips) for (let i = hi; i < sys.homeShips.length; i++) sys.homeShips[i].visible = false;
+
     // battle reticles
     const rScale = Math.min(Math.max(cs.dist / 760, 0.2), 2);
     let ri = 0;
@@ -443,7 +618,7 @@ window.GFX = (function () {
   /* ---------------- battle inset views ---------------- */
   function makeInsetView(idx) {
     const scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0x26303f, 1.0));
+    scene.add(new THREE.AmbientLight(0x3b4254, 1.0));
     const sun = new THREE.DirectionalLight(0xfff2dc, 1.25);
     scene.add(sun);
 
@@ -456,9 +631,9 @@ window.GFX = (function () {
     const bodies = new Map();
     for (const b of env.bodies) {
       const kind = b.name === 'Earth' ? 'earth' : b.name === 'Mars' ? 'mars'
-        : b.name === 'Luna' ? 'moon' : 'rock';
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 24),
-        new THREE.MeshLambertMaterial({ map: planetTex(kind), emissive: 0x0c1016 }));
+        : b.name === 'Luna' ? 'moon' : b.name === 'Pallas' ? 'rock2' : 'rock';
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 24), planetMat(kind));
+      if (kind === 'earth') addClouds(mesh, 1);
       mesh.visible = false;
       scene.add(mesh);
       let rim = null;
@@ -573,7 +748,8 @@ window.GFX = (function () {
       const r = Math.max(body.realR / BTL, halfU * 0.012);
       mesh.position.copy(lp);
       mesh.scale.setScalar(r);
-      mesh.rotation.y = view.simTime / 1e5;
+      mesh.rotation.y = view.simTime / (body.rotPeriod || 1e5) * TAU;
+      if (mesh.userData.clouds) mesh.userData.clouds.rotation.y = view.simTime / 86400 * TAU * -0.32;
       if (rim) { rim.position.copy(lp); rim.scale.setScalar(r); }
       const sp = project(lp, iv.cam, rect.x, rect.y, rect.s, rect.s);
       if (sp && body.parent)
